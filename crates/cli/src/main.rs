@@ -14,9 +14,12 @@ enum Cmd {
     /// Print the syntax tree of a Python file
     Ast { file: PathBuf },
     /// Scan a directory for anti-patterns
-    Scan {
+        Scan {
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Emit findings as JSON (for CI and tooling)
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -31,7 +34,7 @@ fn main() -> Result<()> {
             autoresolve_core::dump(tree.root_node(), &src, 0, &mut out);
             print!("{out}");
         }
-        Cmd::Scan { path } => {
+                Cmd::Scan { path, json } => {
             let mut findings = Vec::new();
             for entry in ignore::WalkBuilder::new(&path).build() {
                 let entry = entry?;
@@ -42,12 +45,16 @@ fn main() -> Result<()> {
                 let Ok(src) = std::fs::read_to_string(p) else { continue };
                 findings.extend(autoresolve_core::detectors::scan_python(p, &src)?);
             }
-            for f in &findings {
-                println!("{}:{}:{}  [{}] {}", f.file.display(), f.line, f.col, f.rule, f.message);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&findings)?);
+            } else {
+                for f in &findings {
+                    println!("{}:{}:{}  [{}] {}", f.file.display(), f.line, f.col, f.rule, f.message);
+                }
+                println!("\n{} finding(s)", findings.len());
             }
-            println!("\n{} finding(s)", findings.len());
             if !findings.is_empty() {
-                std::process::exit(1); // non-zero exit so CI can fail on findings
+                std::process::exit(1);
             }
         }
     }
