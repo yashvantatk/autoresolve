@@ -1,3 +1,4 @@
+pub mod detectors;
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Tree};
 
