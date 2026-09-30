@@ -1,0 +1,9 @@
+[package]
+name = "autoresolve-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+autoresolve-core = { version = "0.1.0", path = "../core" }
+clap = { version = "4.6.7", features = ["derive"] }

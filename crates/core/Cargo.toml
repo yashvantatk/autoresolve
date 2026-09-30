@@ -1,0 +1,9 @@
+[package]
+name = "autoresolve-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+tree-sitter = "0.27.0"
+tree-sitter-python = "0.25.0"
