@@ -3,6 +3,7 @@ use autoresolve_core::agent::Tools;
 use autoresolve_core::review;
 use autoresolve_core::graph::{self, FileGraph, Graph};
 use autoresolve_core::llm::Gemini;
+use autoresolve_core::fix;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -46,6 +47,20 @@ enum Cmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         /// Maximum agent steps before giving up
+        #[arg(long, default_value_t = 12)]
+        max_steps: usize,
+    },
+        /// Review a file, then generate and verify a fix for each confirmed issue
+    Fix {
+        file: PathBuf,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Command to run in the sandbox after patching, e.g. "pytest -q"
+        #[arg(long)]
+        test_cmd: Option<String>,
+        /// Write verified patches into the real repo (default is a dry run)
+        #[arg(long)]
+        apply: bool,
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
     },
@@ -153,6 +168,42 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+        }
+                Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
+            let provider = Gemini::from_env()?;
+            index_repo(&root, &cli.db)?;
+            let graph = Graph::open(&cli.db)?;
+            let tools = Tools::new(&graph, &root)?;
+            let target = file.display().to_string();
+            let judged = review::review(&provider, &tools, &target, max_steps).await?;
+            let confirmed: Vec<_> = judged.into_iter().filter(|j| j.verdict.verdict == "confirmed").collect();
+            println!("\n{} confirmed issue(s) to fix", confirmed.len());
+
+            let mut verified = 0;
+            for (n, j) in confirmed.iter().enumerate() {
+                let i = &j.issue;
+                println!("\n=== [{}] {}:{}  {} ===", i.severity.to_uppercase(), i.file, i.line, i.title);
+                match fix::fix_issue(&provider, &tools, i, test_cmd.as_deref(), &format!("fix{n}"), max_steps).await {
+                    Ok(o) => {
+                        println!("{}", o.patch.summary);
+                        print!("{}", o.diff);
+                        for c in &o.checks {
+                            println!("  [{}] {} {}", if c.passed { "PASS" } else { "FAIL" }, c.name, c.detail);
+                        }
+                        if o.verified {
+                            verified += 1;
+                            if apply {
+                                fix::apply_edits(tools.root(), &o.patch.edits)?;
+                                println!("  -> applied to repo");
+                            }
+                        } else {
+                            println!("  -> NOT verified; not applied");
+                        }
+                    }
+                    Err(e) => println!("  could not produce a fix: {e}"),
+                }
+            }
+            println!("\n{verified}/{} fixes verified", confirmed.len());
         }
     }
     Ok(())

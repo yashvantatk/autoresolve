@@ -25,6 +25,9 @@ impl<'a> Tools<'a> {
     pub fn new(graph: &'a Graph, root: &Path) -> Result<Self> {
         Ok(Self { graph, root: root.canonicalize().context("bad repo root")? })
     }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 
     pub fn specs() -> Vec<ToolSpec> {
         let name_arg = |desc: &str| {

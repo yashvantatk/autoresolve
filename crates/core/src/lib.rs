@@ -3,6 +3,7 @@ pub mod agent;
 pub mod graph;
 pub mod detectors;
 pub mod review;
+pub mod fix;
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Tree};
 
