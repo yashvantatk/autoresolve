@@ -132,19 +132,32 @@ impl<'a> Tools<'a> {
 }
 
 /// The agent loop: ask the model, run the tools it requests, repeat until it answers.
-pub async fn review(provider: &dyn Provider, tools: &Tools<'_>, target: &str, max_steps: usize) -> Result<String> {
-    let specs = Tools::specs();
-    let mut history = vec![Message::User(format!(
-        "Review `{target}` for bugs, security problems and anti-patterns. \
-         Use the tools to look at callers and related code where it matters."
-    ))];
+/// Generic agent loop. Runs until the model calls the `terminal` tool,
+/// then returns that call's arguments (structured output).
+pub async fn run_agent(
+    provider: &dyn Provider,
+    tools: &Tools<'_>,
+    system: &str,
+    task: &str,
+    specs: Vec<ToolSpec>,
+    terminal: &str,
+    max_steps: usize,
+) -> Result<Value> {
+    let mut history = vec![Message::User(task.to_string())];
     for step in 1..=max_steps {
-        let turn = provider.complete(SYSTEM, &history, &specs).await?;
+        let turn = provider.complete(system, &history, &specs).await?;
         let calls = turn.calls.clone();
-        let text = turn.text.clone();
         history.push(Message::Model(turn));
+
+        if let Some(done) = calls.iter().find(|c| c.name == terminal) {
+            return Ok(done.args.clone());
+        }
         if calls.is_empty() {
-            return Ok(text);
+            eprintln!("[step {step}] model answered in prose; asking it to call `{terminal}`");
+            history.push(Message::User(format!(
+                "Do not answer in prose. Finish by calling the `{terminal}` tool."
+            )));
+            continue;
         }
         let mut results = Vec::new();
         for c in &calls {
@@ -153,7 +166,7 @@ pub async fn review(provider: &dyn Provider, tools: &Tools<'_>, target: &str, ma
         }
         history.push(Message::ToolResults(results));
     }
-    bail!("agent hit the step limit ({max_steps}) without a final answer")
+    bail!("agent hit the step limit ({max_steps}) without calling `{terminal}`")
 }
 
 #[cfg(test)]
@@ -163,7 +176,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// Fake model: asks for one tool, then answers. Lets us test the loop with no API key.
+    /// Fake model: uses one tool, then calls the terminal tool. No API key needed.
     struct Mock(Mutex<usize>);
 
     #[async_trait]
@@ -179,24 +192,33 @@ mod tests {
                 })
             } else {
                 assert!(matches!(history.last(), Some(Message::ToolResults(_))));
-                Ok(ModelTurn { text: "done".into(), calls: vec![], raw: json!({}) })
+                Ok(ModelTurn {
+                    text: String::new(),
+                    calls: vec![ToolCall { name: "submit".into(), args: json!({"ok": true}) }],
+                    raw: json!({}),
+                })
             }
         }
     }
 
     #[tokio::test]
-    async fn loop_runs_tools_then_answers() {
+    async fn loop_runs_tools_then_returns_terminal_args() {
         let graph = Graph::open(Path::new(":memory:")).unwrap();
         let tools = Tools::new(&graph, Path::new(".")).unwrap();
-        let out = review(&Mock(Mutex::new(0)), &tools, "x.py", 5).await.unwrap();
-        assert_eq!(out, "done");
+        let out = run_agent(&Mock(Mutex::new(0)), &tools, "sys", "task", vec![], "submit", 5)
+            .await
+            .unwrap();
+        assert_eq!(out["ok"], true);
     }
 
     #[test]
     fn file_reader_refuses_paths_outside_root() {
         let graph = Graph::open(Path::new(":memory:")).unwrap();
         let tools = Tools::new(&graph, Path::new(".")).unwrap();
-        let out = tools.call(&ToolCall { name: "read_lines".into(), args: json!({"file": "/etc/passwd", "start": 1, "end": 5}) });
+        let out = tools.call(&ToolCall {
+            name: "read_lines".into(),
+            args: json!({"file": "/etc/passwd", "start": 1, "end": 5}),
+        });
         assert!(out["error"].as_str().unwrap().contains("escapes"));
     }
 }

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use autoresolve_core::agent::{self, Tools};
+use autoresolve_core::agent::Tools;
+use autoresolve_core::review;
 use autoresolve_core::graph::{self, FileGraph, Graph};
 use autoresolve_core::llm::Gemini;
 use clap::{Parser, Subcommand};
@@ -137,8 +138,21 @@ async fn main() -> Result<()> {
             index_repo(&root, &cli.db)?; // always review against a fresh graph
             let graph = Graph::open(&cli.db)?;
             let tools = Tools::new(&graph, &root)?;
-            let report = agent::review(&provider, &tools, &file.display().to_string(), max_steps).await?;
-            println!("\n{report}");
+            let judged = review::review(&provider, &tools, &file.display().to_string(), max_steps).await?;
+            for (label, want) in [("CONFIRMED", "confirmed"), ("UNCERTAIN", "uncertain"), ("REFUTED by skeptic", "refuted")] {
+                let group: Vec<_> = judged.iter().filter(|j| j.verdict.verdict == want).collect();
+                if group.is_empty() {
+                    continue;
+                }
+                println!("\n== {label} ({}) ==", group.len());
+                for j in group {
+                    let i = &j.issue;
+                    println!(
+                        "[{}] {}:{}  {}\n  {}\n  fix: {}\n  skeptic: {}",
+                        i.severity.to_uppercase(), i.file, i.line, i.title, i.explanation, i.fix, j.verdict.reason
+                    );
+                }
+            }
         }
     }
     Ok(())
