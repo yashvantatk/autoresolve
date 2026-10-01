@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-                Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
+        Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
             let provider = Gemini::from_env()?;
             index_repo(&root, &cli.db)?;
             let graph = Graph::open(&cli.db)?;
@@ -179,11 +179,35 @@ async fn main() -> Result<()> {
             let confirmed: Vec<_> = judged.into_iter().filter(|j| j.verdict.verdict == "confirmed").collect();
             println!("\n{} confirmed issue(s) to fix", confirmed.len());
 
-            let mut verified = 0;
+            let (mut verified, mut proven) = (0, 0);
             for (n, j) in confirmed.iter().enumerate() {
                 let i = &j.issue;
                 println!("\n=== [{}] {}:{}  {} ===", i.severity.to_uppercase(), i.file, i.line, i.title);
-                match fix::fix_issue(&provider, &tools, i, test_cmd.as_deref(), &format!("fix{n}"), max_steps).await {
+
+                // reproduction first: a test that must FAIL on the current code
+                let slug = fix::slugify(&i.title, n);
+                let repro = match fix::reproduce(&provider, &tools, i, &slug, max_steps).await {
+                    Ok(t) => {
+                        println!("regression test: {} (fails on the current code, as it should)", t.description);
+                        Some(t)
+                    }
+                    Err(e) => {
+                        println!("could not reproduce the bug with a test ({e}); the fix will be unproven");
+                        None
+                    }
+                };
+
+                let attempt = fix::fix_issue(
+                    &provider,
+                    &tools,
+                    i,
+                    test_cmd.as_deref(),
+                    repro.as_ref().map(|t| (slug.as_str(), t)),
+                    &format!("fix{n}"),
+                    max_steps,
+                )
+                .await;
+                match attempt {
                     Ok(o) => {
                         println!("{}", o.patch.summary);
                         print!("{}", o.diff);
@@ -192,8 +216,18 @@ async fn main() -> Result<()> {
                         }
                         if o.verified {
                             verified += 1;
+                            if o.proven {
+                                proven += 1;
+                                println!("  -> PROVEN: the regression test fails before the patch and passes after");
+                            } else {
+                                println!("  -> verified by static checks only (no regression test)");
+                            }
                             if apply {
                                 fix::apply_edits(tools.root(), &o.patch.edits)?;
+                                if let Some((rel, content)) = &o.test {
+                                    fix::save_test(tools.root(), rel, content)?;
+                                    println!("  -> saved {rel}");
+                                }
                                 println!("  -> applied to repo");
                             }
                         } else {
@@ -203,7 +237,7 @@ async fn main() -> Result<()> {
                     Err(e) => println!("  could not produce a fix: {e}"),
                 }
             }
-            println!("\n{verified}/{} fixes verified", confirmed.len());
+            println!("\n{verified}/{} fixes verified, {proven} proven by a regression test", confirmed.len());
         }
     }
     Ok(())

@@ -43,6 +43,10 @@ pub struct Outcome {
     pub checks: Vec<Check>,
     pub diff: String,
     pub verified: bool,
+    /// verified AND backed by a regression test that failed before and passes after
+    pub proven: bool,
+    /// (relative path, file content) of the regression test, if one exists
+    pub test: Option<(String, String)>,
 }
 
 fn submit_patch_spec() -> ToolSpec {
@@ -66,6 +70,108 @@ fn submit_patch_spec() -> ToolSpec {
             "required": ["summary", "edits"]
         }),
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReproTest {
+    pub description: String,
+    pub code: String,
+}
+
+const TESTER_SYSTEM: &str = "You write regression tests. Given a confirmed bug, write a minimal \
+standalone Python script that reproduces it. The script must exit with an error (a failed assert \
+or an uncaught exception) on the CURRENT buggy code, and exit cleanly once the bug is fixed. \
+Rules: no pytest or other third-party packages, plain asserts only; import the code under test \
+normally (for example `from buggy import last_item`), the repo root is already on sys.path; \
+call the buggy code directly and assert on the expected correct behavior; never wrap the buggy \
+call in a try/except that would let the script pass either way; test only the behavior in the \
+claim; be deterministic, with no network or randomness. Read the code first with the tools, \
+then call submit_test.";
+
+fn submit_test_spec() -> ToolSpec {
+    ToolSpec {
+        name: "submit_test",
+        description: "Submit the regression test script. Call exactly once when done.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "One sentence: what the test checks."},
+                "code": {"type": "string", "description": "Complete Python source of the script."}
+            },
+            "required": ["description", "code"]
+        }),
+    }
+}
+
+/// Safe filename fragment from a model-written title.
+pub fn slugify(title: &str, n: usize) -> String {
+    let s: String = title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let s = s.split('_').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("_");
+    let s: String = s.chars().take(40).collect();
+    format!("{n}_{s}")
+}
+
+pub fn save_test(root: &Path, rel: &str, content: &str) -> Result<()> {
+    let path = root.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+/// Write the test (with a sys.path header so it can import repo modules) and return (path, content).
+fn write_test(dir: &Path, slug: &str, code: &str) -> Result<(String, String)> {
+    let rel = format!("autoresolve_regression/test_{slug}.py");
+    let content = format!(
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\n{code}\n"
+    );
+    save_test(dir, &rel, &content)?;
+    Ok((rel, content))
+}
+
+/// Reproduction-first: get a test that FAILS on the current code. One retry with feedback.
+pub async fn reproduce(
+    provider: &dyn Provider,
+    tools: &Tools<'_>,
+    issue: &Issue,
+    slug: &str,
+    max_steps: usize,
+) -> Result<ReproTest> {
+    let root = tools.root();
+    let mut feedback = String::new();
+    for attempt in 1..=2 {
+        let mut specs = Tools::specs();
+        specs.push(submit_test_spec());
+        let mut task = format!(
+            "Write a regression test for this confirmed bug:\n{}:{} [{}] {}\n{}",
+            issue.file, issue.line, issue.severity, issue.title, issue.explanation
+        );
+        if !feedback.is_empty() {
+            task.push_str(&format!("\n\nYour previous attempt was rejected:\n{feedback}"));
+        }
+        let out = run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps).await?;
+        let t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
+
+        let sandbox = create_sandbox(root, &format!("{slug}-repro{attempt}"))?;
+        let (rel, _) = write_test(&sandbox, slug, &t.code)?;
+        let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
+        let broken = tail.contains("SyntaxError") || tail.contains("ModuleNotFoundError");
+        if !ok && !broken {
+            return Ok(t); // fails on the buggy code for a real reason, as required
+        }
+        feedback = if ok {
+            "your test PASSED on the current buggy code; it must fail there".to_string()
+        } else {
+            format!("your test is broken, it does not fail because of the bug:\n{tail}")
+        };
+        eprintln!("[repro] attempt {attempt} rejected: {feedback}");
+    }
+    bail!("could not write a test that fails on the current code")
 }
 
 fn safe_join(base: &Path, file: &str) -> Result<PathBuf> {
@@ -193,6 +299,7 @@ pub async fn fix_issue(
     tools: &Tools<'_>,
     issue: &Issue,
     test_cmd: Option<&str>,
+    repro: Option<(&str, &ReproTest)>,
     id: &str,
     max_steps: usize,
 ) -> Result<Outcome> {
@@ -207,6 +314,12 @@ pub async fn fix_issue(
             "Fix this confirmed bug:\n{}:{} [{}] {}\n{}\nSuggested fix: {}",
             issue.file, issue.line, issue.severity, issue.title, issue.explanation, issue.fix
         );
+        if let Some((_, t)) = repro {
+            task.push_str(&format!(
+                "\n\nA regression test for this bug exists and must pass after your fix:\n{}",
+                t.code
+            ));
+        }
         if !feedback.is_empty() {
             task.push_str(&format!("\n\nYour previous attempt failed:\n{feedback}\nFix that and try again."));
         }
@@ -224,7 +337,21 @@ pub async fn fix_issue(
             }
         };
 
+        // the regression test is added after patching, so it is not treated as a patched file
+        let test_file = match repro {
+            Some((slug, t)) => Some(write_test(&sandbox, slug, &t.code)?),
+            None => None,
+        };
+
         let mut checks = verify(&sandbox, root, &touched);
+        if let Some((rel, _)) = &test_file {
+            let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
+            checks.push(Check {
+                name: "regression test (failed before the patch)".into(),
+                passed: ok,
+                detail: if ok { "now passes".into() } else { tail },
+            });
+        }
         if let Some(cmd) = test_cmd {
             let (ok, tail) = run_tests(&sandbox, cmd);
             let base = baseline.map_or("n/a", |b| if b.0 { "pass" } else { "fail" });
@@ -234,10 +361,16 @@ pub async fn fix_issue(
                 detail: if ok { format!("(baseline: {base})") } else { format!("(baseline: {base}) {tail}") },
             });
         }
+
         let verified = !checks.is_empty() && checks.iter().all(|c| c.passed);
-        let diff = diff_for(root, &sandbox, &touched);
+        let proven = verified && test_file.is_some();
+        let mut shown = touched.clone();
+        if let Some((rel, _)) = &test_file {
+            shown.push(rel.clone());
+        }
+        let diff = diff_for(root, &sandbox, &shown);
         if verified {
-            return Ok(Outcome { patch, checks, diff, verified });
+            return Ok(Outcome { patch, checks, diff, verified, proven, test: test_file });
         }
         feedback = checks
             .iter()
@@ -246,7 +379,7 @@ pub async fn fix_issue(
             .collect::<Vec<_>>()
             .join("\n");
         eprintln!("[fix] attempt {attempt} failed verification, retrying with feedback");
-        last = Some(Outcome { patch, checks, diff, verified });
+        last = Some(Outcome { patch, checks, diff, verified, proven, test: test_file });
     }
     last.with_context(|| format!("no patch could be applied: {feedback}"))
 }
@@ -297,5 +430,10 @@ mod tests {
         apply_edits(&sb, &[edit("a.py", "x = 1", "x = 2")]).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("a.py")).unwrap(), "x = 1\n");
         assert_eq!(std::fs::read_to_string(sb.join("a.py")).unwrap(), "x = 2\n");
+    }
+    #[test]
+    fn slugify_makes_safe_filenames() {
+        assert_eq!(slugify("IndexError in last_item()!", 3), "3_indexerror_in_last_item");
+        assert_eq!(slugify("../../etc/passwd", 0), "0_etc_passwd");
     }
 }
