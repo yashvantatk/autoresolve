@@ -1,3 +1,5 @@
+pub mod llm;
+pub mod agent;
 pub mod graph;
 pub mod detectors;
 use anyhow::{Context, Result};

@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
+use autoresolve_core::agent::{self, Tools};
 use autoresolve_core::graph::{self, FileGraph, Graph};
+use autoresolve_core::llm::Gemini;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "autoresolve", version, about = "Agentic code review & repair")]
@@ -36,9 +38,19 @@ enum Cmd {
     Callees { name: String },
     /// List every indexed symbol
     Symbols,
+    /// Agentic code review of a file (needs GEMINI_API_KEY)
+    Review {
+        file: PathBuf,
+        /// Repository root the agent may read from
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Maximum agent steps before giving up
+        #[arg(long, default_value_t = 12)]
+        max_steps: usize,
+    },
 }
 
-fn python_files(root: &PathBuf) -> Result<Vec<PathBuf>> {
+fn python_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for entry in ignore::WalkBuilder::new(root).build() {
         let entry = entry?;
@@ -50,7 +62,22 @@ fn python_files(root: &PathBuf) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn main() -> Result<()> {
+fn index_repo(path: &Path, db: &Path) -> Result<(usize, usize, usize)> {
+    let mut files: Vec<(String, FileGraph)> = Vec::new();
+    for p in python_files(path)? {
+        let Ok(src) = std::fs::read_to_string(&p) else { continue };
+        let tree = autoresolve_core::parse_python(&src)?;
+        files.push((p.display().to_string(), graph::extract(&src, &tree)));
+    }
+    let mut g = Graph::open(db)?;
+    g.replace_all(&files)?;
+    let syms: usize = files.iter().map(|(_, f)| f.symbols.len()).sum();
+    let calls: usize = files.iter().map(|(_, f)| f.calls.len()).sum();
+    Ok((files.len(), syms, calls))
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Ast { file } => {
@@ -80,20 +107,8 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Index { path } => {
-            let mut files: Vec<(String, FileGraph)> = Vec::new();
-            for p in python_files(&path)? {
-                let Ok(src) = std::fs::read_to_string(&p) else { continue };
-                let tree = autoresolve_core::parse_python(&src)?;
-                files.push((p.display().to_string(), graph::extract(&src, &tree)));
-            }
-            let mut g = Graph::open(&cli.db)?;
-            g.replace_all(&files)?;
-            let syms: usize = files.iter().map(|(_, f)| f.symbols.len()).sum();
-            let calls: usize = files.iter().map(|(_, f)| f.calls.len()).sum();
-            println!(
-                "indexed {} files, {} symbols, {} calls -> {}",
-                files.len(), syms, calls, cli.db.display()
-            );
+            let (n, syms, calls) = index_repo(&path, &cli.db)?;
+            println!("indexed {n} files, {syms} symbols, {calls} calls -> {}", cli.db.display());
         }
         Cmd::Callers { name } => {
             let g = Graph::open(&cli.db)?;
@@ -116,6 +131,14 @@ fn main() -> Result<()> {
             for (file, kind, qualname, start, end) in g.symbols()? {
                 println!("{file}:{start}-{end}  {kind:<8} {qualname}");
             }
+        }
+        Cmd::Review { file, root, max_steps } => {
+            let provider = Gemini::from_env()?;
+            index_repo(&root, &cli.db)?; // always review against a fresh graph
+            let graph = Graph::open(&cli.db)?;
+            let tools = Tools::new(&graph, &root)?;
+            let report = agent::review(&provider, &tools, &file.display().to_string(), max_steps).await?;
+            println!("\n{report}");
         }
     }
     Ok(())
