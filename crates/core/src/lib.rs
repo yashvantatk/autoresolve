@@ -2,6 +2,7 @@ pub mod llm;
 pub mod agent;
 pub mod graph;
 pub mod detectors;
+pub mod audit;
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Tree};
 
