@@ -169,73 +169,96 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
+                Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
             let provider = Gemini::from_env()?;
             index_repo(&root, &cli.db)?;
             let graph = Graph::open(&cli.db)?;
-            let tools = Tools::new(&graph, &root)?;
+            let real = root.canonicalize()?;
+            // Verified fixes accumulate in a staging copy, so later fixes are tested on top of earlier ones.
+            let work = fix::create_sandbox(&real, "work")?;
+            let tools = Tools::new(&graph, &work)?;
             let target = file.display().to_string();
             let judged = review::review(&provider, &tools, &target, max_steps).await?;
             let confirmed: Vec<_> = judged.into_iter().filter(|j| j.verdict.verdict == "confirmed").collect();
             println!("\n{} confirmed issue(s) to fix", confirmed.len());
 
             let (mut verified, mut proven) = (0, 0);
-            for (n, j) in confirmed.iter().enumerate() {
-                let i = &j.issue;
-                println!("\n=== [{}] {}:{}  {} ===", i.severity.to_uppercase(), i.file, i.line, i.title);
+            let mut queue: Vec<(usize, &review::Judged)> = confirmed.iter().enumerate().collect();
+            for round in 1..=2 {
+                let mut deferred = Vec::new();
+                for (n, j) in queue {
+                    let i = &j.issue;
+                    println!("\n=== [{}] {}:{}  {} ===", i.severity.to_uppercase(), i.file, i.line, i.title);
 
-                // reproduction first: a test that must FAIL on the current code
-                let slug = fix::slugify(&i.title, n);
-                let repro = match fix::reproduce(&provider, &tools, i, &slug, max_steps).await {
-                    Ok(t) => {
-                        println!("regression test: {} (fails on the current code, as it should)", t.description);
-                        Some(t)
-                    }
-                    Err(e) => {
-                        println!("could not reproduce the bug with a test ({e}); the fix will be unproven");
-                        None
-                    }
-                };
-
-                let attempt = fix::fix_issue(
-                    &provider,
-                    &tools,
-                    i,
-                    test_cmd.as_deref(),
-                    repro.as_ref().map(|t| (slug.as_str(), t)),
-                    &format!("fix{n}"),
-                    max_steps,
-                )
-                .await;
-                match attempt {
-                    Ok(o) => {
-                        println!("{}", o.patch.summary);
-                        print!("{}", o.diff);
-                        for c in &o.checks {
-                            println!("  [{}] {} {}", if c.passed { "PASS" } else { "FAIL" }, c.name, c.detail);
+                    // reproduction first: a test that must FAIL on the current (stacked) code
+                    let slug = fix::slugify(&i.title, n);
+                    let repro = match fix::reproduce(&provider, &tools, i, &slug, max_steps).await {
+                        Ok(t) => {
+                            println!("regression test: {} (fails on the current code, as it should)", t.description);
+                            Some(t)
                         }
-                        if o.verified {
-                            verified += 1;
-                            if o.proven {
-                                proven += 1;
-                                println!("  -> PROVEN: the regression test fails before the patch and passes after");
-                            } else {
-                                println!("  -> verified by static checks only (no regression test)");
+                        Err(e) => {
+                            println!("could not reproduce the bug with a test ({e}); the fix will be unproven");
+                            None
+                        }
+                    };
+
+                    let attempt = fix::fix_issue(
+                        &provider,
+                        &tools,
+                        i,
+                        test_cmd.as_deref(),
+                        repro.as_ref().map(|t| (slug.as_str(), t)),
+                        &format!("fix{n}r{round}"),
+                        max_steps,
+                    )
+                    .await;
+                    match attempt {
+                        Ok(o) => {
+                            println!("{}", o.patch.summary);
+                            print!("{}", o.diff);
+                            for c in &o.checks {
+                                println!("  [{}] {} {}", if c.passed { "PASS" } else { "FAIL" }, c.name, c.detail);
                             }
-                            if apply {
-                                fix::apply_edits(tools.root(), &o.patch.edits)?;
-                                if let Some((rel, content)) = &o.test {
-                                    fix::save_test(tools.root(), rel, content)?;
-                                    println!("  -> saved {rel}");
+                            if o.verified {
+                                verified += 1;
+                                if o.proven {
+                                    proven += 1;
+                                    println!("  -> PROVEN: the regression test fails before the patch and passes after");
+                                } else {
+                                    println!("  -> verified by static checks only (no regression test)");
                                 }
-                                println!("  -> applied to repo");
+                                // stack it: later issues are checked on top of this fix
+                                fix::apply_edits(&work, &o.patch.edits)?;
+                                if let Some((rel, content)) = &o.test {
+                                    fix::save_test(&work, rel, content)?;
+                                }
+                                if apply {
+                                    fix::apply_edits(&real, &o.patch.edits)?;
+                                    if let Some((rel, content)) = &o.test {
+                                        fix::save_test(&real, rel, content)?;
+                                        println!("  -> saved {rel}");
+                                    }
+                                    println!("  -> applied to repo");
+                                }
+                            } else {
+                                println!("  -> NOT verified; not applied");
+                                deferred.push((n, j));
                             }
-                        } else {
-                            println!("  -> NOT verified; not applied");
+                        }
+                        Err(e) => {
+                            println!("  could not produce a fix: {e}");
+                            deferred.push((n, j));
                         }
                     }
-                    Err(e) => println!("  could not produce a fix: {e}"),
                 }
+                if deferred.is_empty() {
+                    break;
+                }
+                if round == 1 {
+                    println!("\n--- retrying {} unverified issue(s) on top of the verified fixes ---", deferred.len());
+                }
+                queue = deferred;
             }
             println!("\n{verified}/{} fixes verified, {proven} proven by a regression test", confirmed.len());
         }

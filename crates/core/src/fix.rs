@@ -1,7 +1,7 @@
 use crate::agent::{run_agent, Tools};
 use crate::detectors;
 use crate::llm::{Provider, ToolSpec};
-use crate::review::Issue;
+use crate::review::{submit_verdict_spec, Issue, Verdict};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,7 +15,10 @@ submit_patch as search/replace edits. Each `search` must match the file text EXA
 including indentation, and must occur exactly once in that file, so include enough \
 surrounding lines to be unique. The read_lines tool prefixes each line with a line number \
 and a '|' character; never include that prefix in `search` or `replace`. Do not reformat \
-or touch unrelated code.";
+or touch unrelated code. Change only what the bug requires: never rename or swap method calls \
+on other objects, never change return types or signatures, and never bend production code to \
+make a regression test pass. If the regression test seems to use the wrong kind of object, keep \
+production code unchanged and say so in `summary`.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edit {
@@ -86,7 +89,11 @@ normally (for example `from buggy import last_item`), the repo root is already o
 call the buggy code directly and assert on the expected correct behavior; never wrap the buggy \
 call in a try/except that would let the script pass either way; test only the behavior in the \
 claim; be deterministic, with no network or randomness. Read the code first with the tools, \
-then call submit_test.";
+then call submit_test. Keep the script clean: no commentary about the task or your reasoning, \
+at most one short comment. If the code under test needs a collaborator object (a cart, a client, \
+a connection), import and use the REAL class from the repo; a stub is allowed only if it implements \
+every method the code calls, under the same names. Never use a list or dict as a stand-in for an \
+object type. The test must fail ONLY because of the claimed bug, and pass for any correct fix.";
 
 fn submit_test_spec() -> ToolSpec {
     ToolSpec {
@@ -293,6 +300,32 @@ fn diff_for(root: &Path, sandbox: &Path, files: &[String]) -> String {
     out
 }
 
+const PATCH_REVIEWER_SYSTEM: &str = "You are a strict reviewer judging a proposed PATCH, not the \
+original bug. You get the bug claim and the unified diff of production code. Verdict `confirmed` \
+means the patch is acceptable: every changed line is needed to fix the claimed bug and nothing \
+else that other code relies on is altered. Verdict `refuted` means reject it: it changes anything \
+the claim does not require, such as renaming or swapping method calls on other objects, changing \
+return types, signatures or defaults of unrelated code, or editing code to suit a test stand-in. \
+Use the tools to check how the changed code is really used (get_callers, and the real classes it \
+talks to). Production code must never be bent to fit a test. Finish by calling submit_verdict.";
+
+pub async fn review_patch(
+    provider: &dyn Provider,
+    tools: &Tools<'_>,
+    issue: &Issue,
+    diff: &str,
+    max_steps: usize,
+) -> Result<Verdict> {
+    let mut specs = Tools::specs();
+    specs.push(submit_verdict_spec());
+    let task = format!(
+        "Bug claim:\n{}:{} {}\n{}\n\nProposed patch (unified diff):\n{}",
+        issue.file, issue.line, issue.title, issue.explanation, diff
+    );
+    let out = run_agent(provider, tools, PATCH_REVIEWER_SYSTEM, &task, specs, "submit_verdict", max_steps).await?;
+    serde_json::from_value(out).context("model returned a malformed verdict")
+}
+
 /// Ask the fixer for a patch, apply it in a sandbox, verify it. One retry with feedback.
 pub async fn fix_issue(
     provider: &dyn Provider,
@@ -316,7 +349,7 @@ pub async fn fix_issue(
         );
         if let Some((_, t)) = repro {
             task.push_str(&format!(
-                "\n\nA regression test for this bug exists and must pass after your fix:\n{}",
+                "\n\nA regression test for this bug exists and will be added to the repo automatically; it must pass after your fix. Edit ONLY existing source files, never create or edit test files:\n{}",
                 t.code
             ));
         }
@@ -361,7 +394,23 @@ pub async fn fix_issue(
                 detail: if ok { format!("(baseline: {base})") } else { format!("(baseline: {base}) {tail}") },
             });
         }
-
+                // Gate: even if every check passed, is the patch limited to what the bug requires?
+        if checks.iter().all(|c| c.passed) {
+            let prod_diff = diff_for(root, &sandbox, &touched);
+            let gate = match review_patch(provider, tools, issue, &prod_diff, max_steps).await {
+                Ok(v) => Check {
+                    name: "patch review (no unrelated changes)".into(),
+                    passed: v.verdict == "confirmed",
+                    detail: v.reason,
+                },
+                Err(e) => Check {
+                    name: "patch review (no unrelated changes)".into(),
+                    passed: false,
+                    detail: format!("reviewer failed: {e}"),
+                },
+            };
+            checks.push(gate);
+        }
         let verified = !checks.is_empty() && checks.iter().all(|c| c.passed);
         let proven = verified && test_file.is_some();
         let mut shown = touched.clone();

@@ -62,7 +62,7 @@ fn submit_findings_spec() -> ToolSpec {
     }
 }
 
-fn submit_verdict_spec() -> ToolSpec {
+pub fn submit_verdict_spec() -> ToolSpec {
     ToolSpec {
         name: "submit_verdict",
         description: "Submit your verdict on the claimed bug. Call exactly once when done.",

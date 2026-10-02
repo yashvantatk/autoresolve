@@ -5,13 +5,6 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-const SYSTEM: &str = "You are a senior code reviewer working inside a repository. \
-Investigate with the tools before drawing conclusions: list symbols, read the code, \
-check callers and callees, and run static_findings. Treat static_findings as hints from \
-a deterministic scanner, not proof. Report only issues you verified by reading the code. \
-For each issue give: severity (high/medium/low), file:line, what is wrong, why it matters, \
-and a concrete fix. If you find nothing wrong, say so. Finish with a short markdown report.";
-
 pub struct Tools<'a> {
     graph: &'a Graph,
     root: PathBuf,
@@ -147,6 +140,7 @@ pub async fn run_agent(
     max_steps: usize,
 ) -> Result<Value> {
     let mut history = vec![Message::User(task.to_string())];
+    let mut seen_calls = std::collections::HashSet::new();
     for step in 1..=max_steps {
         let turn = provider.complete(system, &history, &specs).await?;
         let calls = turn.calls.clone();
@@ -164,8 +158,14 @@ pub async fn run_agent(
         }
         let mut results = Vec::new();
         for c in &calls {
-            eprintln!("[step {step}] {}({})", c.name, c.args);
-            results.push((c.name.clone(), tools.call(c)));
+            let result = if seen_calls.insert(format!("{}:{}", c.name, c.args)) {
+                eprintln!("[step {step}] {}({})", c.name, c.args);
+                tools.call(c)
+            } else {
+                eprintln!("[step {step}] repeated call {}; telling the model to wrap up", c.name);
+                json!({"error": format!("You already made this exact call and have its result above. Do not repeat it; call `{terminal}` now.")})
+            };
+            results.push((c.name.clone(), result));
         }
         history.push(Message::ToolResults(results));
     }
@@ -223,5 +223,44 @@ mod tests {
             args: json!({"file": "/etc/passwd", "start": 1, "end": 5}),
         });
         assert!(out["error"].as_str().unwrap().contains("escapes"));
+    }
+
+        /// Fake model that repeats one call; the loop must not execute the repeat.
+    struct Repeater(Mutex<usize>);
+
+    #[async_trait]
+    impl Provider for Repeater {
+        async fn complete(&self, _s: &str, history: &[Message], _t: &[ToolSpec]) -> Result<ModelTurn> {
+            let mut n = self.0.lock().unwrap();
+            *n += 1;
+            if *n <= 2 {
+                return Ok(ModelTurn {
+                    text: String::new(),
+                    calls: vec![ToolCall { name: "list_symbols".into(), args: json!({}) }],
+                    raw: json!({}),
+                });
+            }
+            match history.last() {
+                Some(Message::ToolResults(rs)) => {
+                    assert!(rs[0].1["error"].as_str().unwrap().contains("already made"))
+                }
+                _ => panic!("expected tool results"),
+            }
+            Ok(ModelTurn {
+                text: String::new(),
+                calls: vec![ToolCall { name: "submit".into(), args: json!({"ok": true}) }],
+                raw: json!({}),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_calls_are_not_executed_twice() {
+        let graph = Graph::open(Path::new(":memory:")).unwrap();
+        let tools = Tools::new(&graph, Path::new(".")).unwrap();
+        let out = run_agent(&Repeater(Mutex::new(0)), &tools, "sys", "task", vec![], "submit", 5)
+            .await
+            .unwrap();
+        assert_eq!(out["ok"], true);
     }
 }
