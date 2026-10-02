@@ -142,6 +142,7 @@ fn write_test(dir: &Path, slug: &str, code: &str) -> Result<(String, String)> {
 }
 
 /// Reproduction-first: get a test that FAILS on the current code. One retry with feedback.
+/// Reproduction-first: get a test that FAILS on the current code. One retry with feedback.
 pub async fn reproduce(
     provider: &dyn Provider,
     tools: &Tools<'_>,
@@ -151,6 +152,7 @@ pub async fn reproduce(
 ) -> Result<ReproTest> {
     let root = tools.root();
     let mut feedback = String::new();
+    let mut passed_last = false;
     for attempt in 1..=2 {
         let mut specs = Tools::specs();
         specs.push(submit_test_spec());
@@ -168,6 +170,7 @@ pub async fn reproduce(
         let (rel, _) = write_test(&sandbox, slug, &t.code)?;
         let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
         let broken = tail.contains("SyntaxError") || tail.contains("ModuleNotFoundError");
+        passed_last = ok;
         if !ok && !broken {
             return Ok(t); // fails on the buggy code for a real reason, as required
         }
@@ -177,6 +180,9 @@ pub async fn reproduce(
             format!("your test is broken, it does not fail because of the bug:\n{tail}")
         };
         eprintln!("[repro] attempt {attempt} rejected: {feedback}");
+    }
+    if passed_last {
+        bail!("the test passes on the current code, so the bug looks already fixed")
     }
     bail!("could not write a test that fails on the current code")
 }
@@ -307,50 +313,115 @@ else that other code relies on is altered. Verdict `refuted` means reject it: it
 the claim does not require, such as renaming or swapping method calls on other objects, changing \
 return types, signatures or defaults of unrelated code, or editing code to suit a test stand-in. \
 Use the tools to check how the changed code is really used (get_callers, and the real classes it \
-talks to). Production code must never be bent to fit a test. Finish by calling submit_verdict.";
-
+talks to). Production code must never be bent to fit a test. If the task lists other confirmed bugs, a \
+change that fixes one of them is acceptable only when it is minimal and needed to exercise the \
+claimed bug. Finish by calling submit_verdict.";
 pub async fn review_patch(
     provider: &dyn Provider,
     tools: &Tools<'_>,
     issue: &Issue,
     diff: &str,
+    others: &str,
     max_steps: usize,
 ) -> Result<Verdict> {
     let mut specs = Tools::specs();
     specs.push(submit_verdict_spec());
-    let task = format!(
+    let mut task = format!(
         "Bug claim:\n{}:{} {}\n{}\n\nProposed patch (unified diff):\n{}",
         issue.file, issue.line, issue.title, issue.explanation, diff
     );
+    if !others.is_empty() {
+        task.push_str(&format!(
+            "\n\nOther confirmed bugs in this repo:\n{others}\nA change that fixes one of these is acceptable only if it is minimal and needed to exercise the claimed bug."
+        ));
+    }
     let out = run_agent(provider, tools, PATCH_REVIEWER_SYSTEM, &task, specs, "submit_verdict", max_steps).await?;
     serde_json::from_value(out).context("model returned a malformed verdict")
 }
-
+/// The regression test errored on the patched code: ask the tester to repair the TEST
+/// (not the patch), then confirm it still fails on the original code.
+async fn repair_test(
+    provider: &dyn Provider,
+    tools: &Tools<'_>,
+    issue: &Issue,
+    old: &ReproTest,
+    failure: &str,
+    slug: &str,
+    max_steps: usize,
+) -> Result<ReproTest> {
+    let root = tools.root();
+    let mut specs = Tools::specs();
+    specs.push(submit_test_spec());
+    let task = format!(
+        "Bug claim:\n{}:{} {}\n{}\n\nYour regression test:\n{}\n\nAfter a plausible fix was applied, the test still failed with:\n{}\n\n\
+         The test is probably at fault (for example a stand-in object that lacks a method the code calls). \
+         Rewrite the TEST so it uses the real classes from the repo, or a stub that has every method the code calls. \
+         It must still fail on the original buggy code because of the claimed bug, and pass once the bug is fixed.",
+        issue.file, issue.line, issue.title, issue.explanation, old.code, failure
+    );
+    let out = run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps).await?;
+    let t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
+    let sandbox = create_sandbox(root, &format!("{slug}-repair"))?;
+    let (rel, _) = write_test(&sandbox, slug, &t.code)?;
+    let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
+    if ok || tail.contains("SyntaxError") || tail.contains("ModuleNotFoundError") {
+        bail!("the repaired test no longer fails on the original code for the claimed bug");
+    }
+    Ok(t)
+}
+/// Ask the fixer for a patch, apply it in a sandbox, verify it. One retry with feedback.
 /// Ask the fixer for a patch, apply it in a sandbox, verify it. One retry with feedback.
 pub async fn fix_issue(
     provider: &dyn Provider,
     tools: &Tools<'_>,
     issue: &Issue,
+    siblings: &[Issue],
     test_cmd: Option<&str>,
     repro: Option<(&str, &ReproTest)>,
     id: &str,
     max_steps: usize,
 ) -> Result<Outcome> {
     let root = tools.root();
+    let slug: Option<&str> = repro.map(|(s, _)| s);
+    let mut current: Option<ReproTest> = repro.map(|(_, t)| t.clone());
+    let others: String = siblings
+        .iter()
+        .map(|s| format!("- {}:{} {}", s.file, s.line, s.title))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut feedback = String::new();
+    let mut test_failure: Option<String> = None;
     let mut last: Option<Outcome> = None;
 
     for attempt in 1..=2 {
+        // if the regression test itself errored on the patched code, let the tester repair it
+        if let (Some(sl), Some(fail)) = (slug, test_failure.take()) {
+            if let Some(old) = current.clone() {
+                match repair_test(provider, tools, issue, &old, &fail, sl, max_steps).await {
+                    Ok(t) => {
+                        eprintln!("[fix] regression test rewritten after it errored on the patched code");
+                        current = Some(t);
+                    }
+                    Err(e) => eprintln!("[fix] could not repair the test: {e}"),
+                }
+            }
+        }
+
         let mut specs = Tools::specs();
         specs.push(submit_patch_spec());
         let mut task = format!(
             "Fix this confirmed bug:\n{}:{} [{}] {}\n{}\nSuggested fix: {}",
             issue.file, issue.line, issue.severity, issue.title, issue.explanation, issue.fix
         );
-        if let Some((_, t)) = repro {
+        if let Some(t) = &current {
             task.push_str(&format!(
                 "\n\nA regression test for this bug exists and will be added to the repo automatically; it must pass after your fix. Edit ONLY existing source files, never create or edit test files:\n{}",
                 t.code
+            ));
+        }
+        if !others.is_empty() {
+            task.push_str(&format!(
+                "\n\nOther confirmed bugs exist in this repo:\n{others}\nIf your regression test cannot even run because one of them crashes first, you may include the minimal fix for that one too; say so in `summary`. Otherwise leave them alone."
             ));
         }
         if !feedback.is_empty() {
@@ -371,14 +442,18 @@ pub async fn fix_issue(
         };
 
         // the regression test is added after patching, so it is not treated as a patched file
-        let test_file = match repro {
-            Some((slug, t)) => Some(write_test(&sandbox, slug, &t.code)?),
-            None => None,
+        let test_file = match (&current, slug) {
+            (Some(t), Some(sl)) => Some(write_test(&sandbox, sl, &t.code)?),
+            _ => None,
         };
 
         let mut checks = verify(&sandbox, root, &touched);
         if let Some((rel, _)) = &test_file {
             let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
+            // an error that is not a plain assertion failure usually means the TEST is wrong
+            if !ok && !tail.contains("AssertionError") {
+                test_failure = Some(tail.clone());
+            }
             checks.push(Check {
                 name: "regression test (failed before the patch)".into(),
                 passed: ok,
@@ -394,10 +469,11 @@ pub async fn fix_issue(
                 detail: if ok { format!("(baseline: {base})") } else { format!("(baseline: {base}) {tail}") },
             });
         }
-                // Gate: even if every check passed, is the patch limited to what the bug requires?
+
+        // Gate: even if every check passed, is the patch limited to what the bug requires?
         if checks.iter().all(|c| c.passed) {
             let prod_diff = diff_for(root, &sandbox, &touched);
-            let gate = match review_patch(provider, tools, issue, &prod_diff, max_steps).await {
+            let gate = match review_patch(provider, tools, issue, &prod_diff, &others, max_steps).await {
                 Ok(v) => Check {
                     name: "patch review (no unrelated changes)".into(),
                     passed: v.verdict == "confirmed",
@@ -411,6 +487,7 @@ pub async fn fix_issue(
             };
             checks.push(gate);
         }
+
         let verified = !checks.is_empty() && checks.iter().all(|c| c.passed);
         let proven = verified && test_file.is_some();
         let mut shown = touched.clone();

@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
@@ -45,6 +46,7 @@ pub struct Gemini {
     key: String,
     model: String,
     http: reqwest::Client,
+    calls: AtomicUsize,
 }
 
 impl Gemini {
@@ -56,7 +58,19 @@ impl Gemini {
             .timeout(std::time::Duration::from_secs(180))
             .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .build()?;
-        Ok(Self { key, model, http })
+            Ok(Self { key, model, http, calls: AtomicUsize::new(0) })
+    }
+        /// Like `from_env`, but a role-specific env var can override the model.
+    pub fn from_env_role(var: &str) -> Result<Self> {
+        let mut g = Self::from_env()?;
+        if let Ok(m) = std::env::var(var) {
+            g.model = m;
+        }
+        Ok(g)
+    }
+        /// Successful API calls made by this client so far.
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
     }
 }
 
@@ -105,7 +119,7 @@ impl Provider for Gemini {
         }
 
         eprintln!("[waiting for {} ...]", self.model);
-                let mut attempt: u32 = 0;
+        let mut attempt: u32 = 0;
         let v: Value = loop {
             let sent = self
                 .http
@@ -129,12 +143,22 @@ impl Provider for Gemini {
             let status = resp.status();
             let v: Value = resp.json().await?;
             if status.is_success() {
+                self.calls.fetch_add(1, Ordering::Relaxed);
                 break v;
             }
-            // 429 (rate limit) and 5xx (overload) are transient: back off and retry
+            // A daily quota cannot be fixed by waiting a few seconds: stop the whole run.
+            if status.as_u16() == 429 && v.to_string().contains("PerDay") {
+                bail!(
+                    "QUOTA_EXHAUSTED: the daily request quota for {} is used up. It usually resets at \
+                     midnight Pacific time. Meanwhile set AUTORESOLVE_MODEL to another model (each model \
+                     has its own quota).",
+                    self.model
+                );
+            }
+            // other 429s (per-minute) and 5xx are transient: wait (honoring the server's hint) and retry
             let retryable = status.as_u16() == 429 || status.is_server_error();
             if retryable && attempt < 4 {
-                let wait = 2u64.pow(attempt + 1);
+                let wait = retry_delay(&v).unwrap_or(2u64.pow(attempt + 1)).min(90);
                 eprintln!("[retry] Gemini returned {status}, waiting {wait}s (attempt {}/4)", attempt + 1);
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                 attempt += 1;
@@ -161,5 +185,27 @@ impl Provider for Gemini {
             }
         }
         Ok(ModelTurn { text, calls, raw: content })
+    }
+}
+
+/// Server-suggested wait from a 429 body, e.g. "retryDelay": "13s" or "34.7s".
+fn retry_delay(v: &Value) -> Option<u64> {
+    v["error"]["details"]
+        .as_array()?
+        .iter()
+        .find_map(|d| d["retryDelay"].as_str())
+        .and_then(|s| s.trim_end_matches('s').parse::<f64>().ok())
+        .map(|secs| secs.ceil() as u64 + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_retry_delay_hint() {
+        let v = json!({"error": {"details": [{"@type": "x"}, {"retryDelay": "13.2s"}]}});
+        assert_eq!(retry_delay(&v), Some(15));
+        assert_eq!(retry_delay(&json!({})), None);
     }
 }

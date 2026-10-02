@@ -108,6 +108,7 @@ pub async fn review(provider: &dyn Provider, tools: &Tools<'_>, target: &str, ma
         eprintln!("[skeptic] challenging: {}", issue.title);
         let verdict = match challenge(provider, tools, &issue, max_steps).await {
             Ok(v) => v,
+            Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
             // one failed challenge should not sink the whole review
             Err(e) => Verdict { verdict: "uncertain".into(), reason: format!("skeptic failed: {e}") },
         };

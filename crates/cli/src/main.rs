@@ -168,9 +168,12 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+            eprintln!("[usage] {} API calls", provider.calls());
         }
-                Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
-            let provider = Gemini::from_env()?;
+        Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
+            let provider = Gemini::from_env()?; // reviewer and skeptic
+            // tester, fixer and patch gate; set AUTORESOLVE_MODEL_STRONG to give them a stronger model
+            let strong = Gemini::from_env_role("AUTORESOLVE_MODEL_STRONG")?;
             index_repo(&root, &cli.db)?;
             let graph = Graph::open(&cli.db)?;
             let real = root.canonicalize()?;
@@ -182,7 +185,7 @@ async fn main() -> Result<()> {
             let confirmed: Vec<_> = judged.into_iter().filter(|j| j.verdict.verdict == "confirmed").collect();
             println!("\n{} confirmed issue(s) to fix", confirmed.len());
 
-            let (mut verified, mut proven) = (0, 0);
+            let (mut verified, mut proven, mut already) = (0, 0, 0);
             let mut queue: Vec<(usize, &review::Judged)> = confirmed.iter().enumerate().collect();
             for round in 1..=2 {
                 let mut deferred = Vec::new();
@@ -190,13 +193,26 @@ async fn main() -> Result<()> {
                     let i = &j.issue;
                     println!("\n=== [{}] {}:{}  {} ===", i.severity.to_uppercase(), i.file, i.line, i.title);
 
-                    // reproduction first: a test that must FAIL on the current (stacked) code
                     let slug = fix::slugify(&i.title, n);
-                    let repro = match fix::reproduce(&provider, &tools, i, &slug, max_steps).await {
+                    let siblings: Vec<review::Issue> = confirmed
+                        .iter()
+                        .enumerate()
+                        .filter(|(m, _)| *m != n)
+                        .map(|(_, x)| x.issue.clone())
+                        .collect();
+
+                    // reproduction first: a test that must FAIL on the current (stacked) code
+                    let repro = match fix::reproduce(&strong, &tools, i, &slug, max_steps).await {
                         Ok(t) => {
                             println!("regression test: {} (fails on the current code, as it should)", t.description);
                             Some(t)
                         }
+                        Err(e) if e.to_string().contains("looks already fixed") => {
+                            println!("a test for this bug already passes: an earlier fix probably resolved it; skipping");
+                            already += 1;
+                            continue;
+                        }
+                        Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
                         Err(e) => {
                             println!("could not reproduce the bug with a test ({e}); the fix will be unproven");
                             None
@@ -204,9 +220,10 @@ async fn main() -> Result<()> {
                     };
 
                     let attempt = fix::fix_issue(
-                        &provider,
+                        &strong,
                         &tools,
                         i,
+                        &siblings,
                         test_cmd.as_deref(),
                         repro.as_ref().map(|t| (slug.as_str(), t)),
                         &format!("fix{n}r{round}"),
@@ -246,6 +263,7 @@ async fn main() -> Result<()> {
                                 deferred.push((n, j));
                             }
                         }
+                        Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
                         Err(e) => {
                             println!("  could not produce a fix: {e}");
                             deferred.push((n, j));
@@ -260,7 +278,15 @@ async fn main() -> Result<()> {
                 }
                 queue = deferred;
             }
-            println!("\n{verified}/{} fixes verified, {proven} proven by a regression test", confirmed.len());
+            println!(
+                "\n{verified}/{} fixes verified, {proven} proven by a regression test, {already} likely resolved by earlier fixes",
+                confirmed.len()
+            );
+            eprintln!(
+                "[usage] {} API calls (reviewer/skeptic) + {} (tester/fixer/gate)",
+                provider.calls(),
+                strong.calls()
+            );
         }
     }
     Ok(())
