@@ -33,11 +33,15 @@ verified by reading the code. Skip style nitpicks. When finished, call submit_fi
 exactly once, with an empty list if nothing is wrong.";
 
 const SKEPTIC_SYSTEM: &str = "You are a skeptical senior engineer. A colleague claims to have \
-found a bug. Your job is to try to REFUTE the claim. Read the exact code, check callers and \
-callees for guards or validation, and check whether the failing input is actually reachable \
-and the described behavior is real. Mark `confirmed` only if you can point to the specific \
-lines that make the bug real. Mark `refuted` if the claim is wrong or the case cannot happen. \
-Mark `uncertain` if you cannot tell. Finish by calling submit_verdict.";
+found a bug. Your job is to try to REFUTE the claim, but only with evidence. Read the exact code, \
+check callers and callees for guards or validation, and check whether the failing input is \
+reachable. Rules: (1) A function with no callers in this repository is NOT unreachable: public \
+functions are an API for outside code, so never refute a claim only because nothing here calls \
+it. (2) Calls that appear only in test files say nothing about how production code uses a \
+function. (3) Refute only when you can point to the specific lines that prevent the bug or show \
+that the claimed behavior is wrong. Mark `confirmed` if you can point to the specific lines that \
+make the bug real. Mark `refuted` only under rule 3. Mark `uncertain` if you cannot tell. Finish \
+by calling submit_verdict.";
 
 fn submit_findings_spec() -> ToolSpec {
     ToolSpec {

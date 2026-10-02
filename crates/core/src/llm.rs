@@ -41,6 +41,12 @@ pub trait Provider: Send + Sync {
         tools: &[ToolSpec],
     ) -> Result<ModelTurn>;
 
+    /// Ask for a final answer constrained to a JSON schema (grammar-constrained decoding).
+    /// Backends that cannot do this keep the default, which reports "unsupported".
+    async fn complete_json(&self, _system: &str, _history: &[Message], _schema: &Value) -> Result<Value> {
+        bail!("structured output is not supported by this provider")
+    }
+
     /// Successful API calls so far (for the usage line).
     fn calls(&self) -> usize {
         0
@@ -52,6 +58,9 @@ pub trait Provider: Send + Sync {
 impl Provider for Box<dyn Provider> {
     async fn complete(&self, system: &str, history: &[Message], tools: &[ToolSpec]) -> Result<ModelTurn> {
         (**self).complete(system, history, tools).await
+    }
+    async fn complete_json(&self, system: &str, history: &[Message], schema: &Value) -> Result<Value> {
+        (**self).complete_json(system, history, schema).await
     }
     fn calls(&self) -> usize {
         (**self).calls()
@@ -244,41 +253,12 @@ impl Ollama {
             .build()?;
         Ok(Self { host, model, num_ctx, think, http, calls: AtomicUsize::new(0) })
     }
-}
 
-#[async_trait]
-impl Provider for Ollama {
-    async fn complete(&self, system: &str, history: &[Message], tools: &[ToolSpec]) -> Result<ModelTurn> {
-        let mut messages = vec![json!({"role": "system", "content": system})];
-        for m in history {
-            match m {
-                Message::User(t) => messages.push(json!({"role": "user", "content": t})),
-                Message::Model(turn) => messages.push(turn.raw.clone()),
-                Message::ToolResults(rs) => {
-                    for (name, v) in rs {
-                        messages.push(json!({"role": "tool", "tool_name": name, "content": v.to_string()}));
-                    }
-                }
-            }
-        }
-        let tool_defs: Vec<Value> = tools
-            .iter()
-            .map(|t| {
-                json!({"type": "function",
-                       "function": {"name": t.name, "description": t.description, "parameters": t.parameters}})
-            })
-            .collect();
-        let mut body = json!({
-            "model": self.model,
-            "messages": messages,
-            "tools": tool_defs,
-            "stream": false,
-            "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
-        });
+    /// One /api/chat round trip; returns the assistant message.
+    async fn chat(&self, mut body: Value) -> Result<Value> {
         if let Some(t) = self.think {
             body["think"] = json!(t);
         }
-
         eprintln!("[waiting for {} (ollama) ...]", self.model);
         let url = format!("{}/api/chat", self.host);
         let resp = self
@@ -294,11 +274,56 @@ impl Provider for Ollama {
             bail!("Ollama error {status}: {v}");
         }
         self.calls.fetch_add(1, Ordering::Relaxed);
-
+        eprintln!(
+            "[ollama] {} prompt tokens, {} generated tokens, {:.1}s",
+            v["prompt_eval_count"].as_u64().unwrap_or(0),
+            v["eval_count"].as_u64().unwrap_or(0),
+            v["total_duration"].as_f64().unwrap_or(0.0) / 1e9
+        );
         let msg = v["message"].clone();
         if msg.is_null() {
             bail!("no message in response: {v}");
         }
+        Ok(msg)
+    }
+}
+
+fn ollama_messages(system: &str, history: &[Message]) -> Vec<Value> {
+    let mut messages = vec![json!({"role": "system", "content": system})];
+    for m in history {
+        match m {
+            Message::User(t) => messages.push(json!({"role": "user", "content": t})),
+            Message::Model(turn) => messages.push(turn.raw.clone()),
+            Message::ToolResults(rs) => {
+                for (name, v) in rs {
+                    messages.push(json!({"role": "tool", "tool_name": name, "content": v.to_string()}));
+                }
+            }
+        }
+    }
+    messages
+}
+
+#[async_trait]
+impl Provider for Ollama {
+    async fn complete(&self, system: &str, history: &[Message], tools: &[ToolSpec]) -> Result<ModelTurn> {
+        let tool_defs: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                json!({"type": "function",
+                       "function": {"name": t.name, "description": t.description, "parameters": t.parameters}})
+            })
+            .collect();
+        let msg = self
+            .chat(json!({
+                "model": self.model,
+                "messages": ollama_messages(system, history),
+                "tools": tool_defs,
+                "stream": false,
+                "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
+            }))
+            .await?;
+
         let text = msg["content"].as_str().unwrap_or("").to_string();
         let mut calls = Vec::new();
         for c in msg["tool_calls"].as_array().cloned().unwrap_or_default() {
@@ -312,6 +337,25 @@ impl Provider for Ollama {
             calls.push(ToolCall { name: c["function"]["name"].as_str().unwrap_or("").to_string(), args });
         }
         Ok(ModelTurn { text, calls, raw: msg })
+    }
+
+    async fn complete_json(&self, system: &str, history: &[Message], schema: &Value) -> Result<Value> {
+        let mut messages = ollama_messages(system, history);
+        messages.push(json!({
+            "role": "user",
+            "content": "Stop investigating. Based on everything above, give your final answer now as JSON in the required format."
+        }));
+        let msg = self
+            .chat(json!({
+                "model": self.model,
+                "messages": messages,
+                "format": schema,
+                "stream": false,
+                "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
+            }))
+            .await?;
+        let text = msg["content"].as_str().unwrap_or("");
+        serde_json::from_str(text).with_context(|| format!("model returned invalid JSON: {text}"))
     }
 
     fn calls(&self) -> usize {

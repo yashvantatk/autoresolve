@@ -18,6 +18,7 @@ impl<'a> Tools<'a> {
     pub fn new(graph: &'a Graph, root: &Path) -> Result<Self> {
         Ok(Self { graph, root: root.canonicalize().context("bad repo root")? })
     }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -129,7 +130,8 @@ impl<'a> Tools<'a> {
 
 /// Generic agent loop. Runs until the model calls the `terminal` tool,
 /// then returns that call's arguments (structured output).
-/// The terminal tool is refused until the model has used at least one other tool.
+/// The terminal tool is refused until the model has used at least one other tool, and a model
+/// that keeps answering in prose is switched to schema-constrained output where the backend supports it.
 pub async fn run_agent(
     provider: &dyn Provider,
     tools: &Tools<'_>,
@@ -142,18 +144,32 @@ pub async fn run_agent(
     let mut history = vec![Message::User(task.to_string())];
     let mut seen_calls = std::collections::HashSet::new();
     let mut used_tool = false; // the model must look at the code before it may submit
+    let mut prose_streak = 0; // consecutive answers in prose instead of a tool call
     for step in 1..=max_steps {
         let turn = provider.complete(system, &history, &specs).await?;
         let calls = turn.calls.clone();
         history.push(Message::Model(turn));
 
         if calls.is_empty() {
+            prose_streak += 1;
+            if prose_streak >= 2 && used_tool {
+                if let Some(spec) = specs.iter().find(|s| s.name == terminal) {
+                    match provider.complete_json(system, &history, &spec.parameters).await {
+                        Ok(v) => {
+                            eprintln!("[step {step}] model kept answering in prose; forced structured output for `{terminal}`");
+                            return Ok(v);
+                        }
+                        Err(e) => eprintln!("[step {step}] structured output unavailable ({e})"),
+                    }
+                }
+            }
             eprintln!("[step {step}] model answered in prose; asking it to call `{terminal}`");
             history.push(Message::User(format!(
                 "Do not answer in prose. Finish by calling the `{terminal}` tool."
             )));
             continue;
         }
+        prose_streak = 0;
 
         let used_before = used_tool;
         let mut done: Option<Value> = None;
@@ -242,7 +258,7 @@ mod tests {
         assert!(out["error"].as_str().unwrap().contains("escapes"));
     }
 
-        /// Fake model that repeats one call; the loop must not execute the repeat.
+    /// Fake model that repeats one call; the loop must not execute the repeat.
     struct Repeater(Mutex<usize>);
 
     #[async_trait]
@@ -280,7 +296,8 @@ mod tests {
             .unwrap();
         assert_eq!(out["ok"], true);
     }
-        /// Lazy fake model: tries to submit at once, then investigates after being sent back.
+
+    /// Lazy fake model: tries to submit at once, then investigates after being sent back.
     struct Lazy(Mutex<usize>);
 
     #[async_trait]
@@ -317,5 +334,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["n"], 1);
+    }
+
+    /// Chatty fake model: uses one tool, then keeps answering in prose. Supports structured output.
+    struct Chatty(Mutex<usize>);
+
+    #[async_trait]
+    impl Provider for Chatty {
+        async fn complete(&self, _s: &str, _h: &[Message], _t: &[ToolSpec]) -> Result<ModelTurn> {
+            let mut n = self.0.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                Ok(ModelTurn {
+                    text: String::new(),
+                    calls: vec![ToolCall { name: "list_symbols".into(), args: json!({}) }],
+                    raw: json!({}),
+                })
+            } else {
+                Ok(ModelTurn { text: "I think the bug is real.".into(), calls: vec![], raw: json!({}) })
+            }
+        }
+
+        async fn complete_json(&self, _s: &str, _h: &[Message], _schema: &Value) -> Result<Value> {
+            Ok(json!({"verdict": "confirmed"}))
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_prose_forces_structured_output() {
+        let graph = Graph::open(Path::new(":memory:")).unwrap();
+        let tools = Tools::new(&graph, Path::new(".")).unwrap();
+        let spec = ToolSpec {
+            name: "submit",
+            description: "d",
+            parameters: json!({"type": "object", "properties": {"verdict": {"type": "string"}}}),
+        };
+        let out = run_agent(&Chatty(Mutex::new(0)), &tools, "sys", "task", vec![spec], "submit", 8)
+            .await
+            .unwrap();
+        assert_eq!(out["verdict"], "confirmed");
     }
 }

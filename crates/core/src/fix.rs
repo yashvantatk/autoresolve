@@ -142,7 +142,6 @@ fn write_test(dir: &Path, slug: &str, code: &str) -> Result<(String, String)> {
 }
 
 /// Reproduction-first: get a test that FAILS on the current code. One retry with feedback.
-/// Reproduction-first: get a test that FAILS on the current code. One retry with feedback.
 pub async fn reproduce(
     provider: &dyn Provider,
     tools: &Tools<'_>,
@@ -169,7 +168,9 @@ pub async fn reproduce(
         let sandbox = create_sandbox(root, &format!("{slug}-repro{attempt}"))?;
         let (rel, _) = write_test(&sandbox, slug, &t.code)?;
         let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
-        let broken = tail.contains("SyntaxError") || tail.contains("ModuleNotFoundError");
+        let broken = tail.contains("SyntaxError")
+            || tail.contains("ModuleNotFoundError")
+            || !fails_for_real(&tail);
         passed_last = ok;
         if !ok && !broken {
             return Ok(t); // fails on the buggy code for a real reason, as required
@@ -282,11 +283,23 @@ fn run_tests(dir: &Path, cmd: &str) -> (bool, String) {
         Ok(o) => {
             let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
             text.push_str(&String::from_utf8_lossy(&o.stderr));
-            let tail: String = text.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+            let tail: String = text.chars().rev().take(1500).collect::<Vec<_>>().into_iter().rev().collect();
             (o.status.success(), tail)
         }
         Err(e) => (false, format!("could not run: {e}")),
     }
+}
+
+/// A failing test only counts as a reproduction if it fails by assertion, or the error
+/// originates inside repo code. An error raised directly in the test file (a missing
+/// attribute, a bad import) means the test is broken, not that it found the bug.
+fn fails_for_real(tail: &str) -> bool {
+    if tail.contains("AssertionError") {
+        return true;
+    }
+    tail.lines()
+        .filter(|l| l.trim_start().starts_with("File \""))
+        .any(|l| !l.contains("autoresolve_regression"))
 }
 
 fn diff_for(root: &Path, sandbox: &Path, files: &[String]) -> String {
@@ -316,6 +329,7 @@ Use the tools to check how the changed code is really used (get_callers, and the
 talks to). Production code must never be bent to fit a test. If the task lists other confirmed bugs, a \
 change that fixes one of them is acceptable only when it is minimal and needed to exercise the \
 claimed bug. Finish by calling submit_verdict.";
+
 pub async fn review_patch(
     provider: &dyn Provider,
     tools: &Tools<'_>,
@@ -338,6 +352,7 @@ pub async fn review_patch(
     let out = run_agent(provider, tools, PATCH_REVIEWER_SYSTEM, &task, specs, "submit_verdict", max_steps).await?;
     serde_json::from_value(out).context("model returned a malformed verdict")
 }
+
 /// The regression test errored on the patched code: ask the tester to repair the TEST
 /// (not the patch), then confirm it still fails on the original code.
 async fn repair_test(
@@ -364,12 +379,12 @@ async fn repair_test(
     let sandbox = create_sandbox(root, &format!("{slug}-repair"))?;
     let (rel, _) = write_test(&sandbox, slug, &t.code)?;
     let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
-    if ok || tail.contains("SyntaxError") || tail.contains("ModuleNotFoundError") {
+    if ok || tail.contains("SyntaxError") || tail.contains("ModuleNotFoundError") || !fails_for_real(&tail) {
         bail!("the repaired test no longer fails on the original code for the claimed bug");
     }
     Ok(t)
 }
-/// Ask the fixer for a patch, apply it in a sandbox, verify it. One retry with feedback.
+
 /// Ask the fixer for a patch, apply it in a sandbox, verify it. One retry with feedback.
 pub async fn fix_issue(
     provider: &dyn Provider,
@@ -450,8 +465,8 @@ pub async fn fix_issue(
         let mut checks = verify(&sandbox, root, &touched);
         if let Some((rel, _)) = &test_file {
             let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
-            // an error that is not a plain assertion failure usually means the TEST is wrong
-            if !ok && !tail.contains("AssertionError") {
+            // an error raised only in the test file means the TEST is wrong, not the patch
+            if !ok && !fails_for_real(&tail) {
                 test_failure = Some(tail.clone());
             }
             checks.push(Check {
@@ -557,9 +572,19 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("a.py")).unwrap(), "x = 1\n");
         assert_eq!(std::fs::read_to_string(sb.join("a.py")).unwrap(), "x = 2\n");
     }
+
     #[test]
     fn slugify_makes_safe_filenames() {
         assert_eq!(slugify("IndexError in last_item()!", 3), "3_indexerror_in_last_item");
         assert_eq!(slugify("../../etc/passwd", 0), "0_etc_passwd");
+    }
+
+    #[test]
+    fn failure_must_come_from_the_bug_not_the_test() {
+        let wrong = "Traceback (most recent call last):\n  File \"/x/autoresolve_regression/test_0.py\", line 7, in <module>\n    cart.check_item(1)\nAttributeError: 'Cart' object has no attribute 'check_item'\n";
+        assert!(!fails_for_real(wrong));
+        let right = "Traceback (most recent call last):\n  File \"/x/autoresolve_regression/test_0.py\", line 9, in <module>\n    add_all(c, [1])\n  File \"/x/buggy.py\", line 15, in add_all\n    check_item(i, strict=True)\nTypeError: check_item() got an unexpected keyword argument 'strict'\n";
+        assert!(fails_for_real(right));
+        assert!(fails_for_real("Traceback (most recent call last):\nAssertionError: expected 3\n"));
     }
 }
