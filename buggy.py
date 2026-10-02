@@ -8,11 +8,12 @@ def average(nums):
     return sum(nums) / len(nums)
 
 def last_item(items):
-    return items[-1]
+    return items[-1] if items else None
 
-def add_all(cart, items, seen=[]):
+def add_all(cart, items, seen=None):
+    if seen is None: seen = []
     for i in items:
-        check_item(i, strict=True)
+        check_item(i)
         seen.append(i)
         cart.add(i)
     return seen
