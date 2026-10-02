@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use autoresolve_core::agent::Tools;
-use autoresolve_core::fix;
+use autoresolve_core::fix::{self, Plan, PlanItem};
 use autoresolve_core::graph::{self, FileGraph, Graph};
 use autoresolve_core::llm::{self, Provider};
 use autoresolve_core::review;
@@ -50,7 +50,7 @@ enum Cmd {
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
     },
-    /// Review a file, then generate and verify a fix for each confirmed issue
+    /// Review a file, then generate and verify a fix for each confirmed issue (saves a plan)
     Fix {
         file: PathBuf,
         #[arg(long, default_value = ".")]
@@ -58,11 +58,19 @@ enum Cmd {
         /// Command to run in the sandbox after patching, e.g. "pytest -q"
         #[arg(long)]
         test_cmd: Option<String>,
-        /// Write verified patches into the real repo (default is a dry run)
+        /// Write verified patches into the real repo while running (default is a dry run)
         #[arg(long)]
         apply: bool,
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
+    },
+    /// Apply the plan saved by the last `fix` run, exactly as reviewed (no models involved)
+    ApplyPlan {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Plan file (default: <root>/.autoresolve/plan.json)
+        #[arg(long)]
+        plan: Option<PathBuf>,
     },
 }
 
@@ -184,6 +192,7 @@ async fn main() -> Result<()> {
             let confirmed: Vec<_> = judged.into_iter().filter(|j| j.verdict.verdict == "confirmed").collect();
             println!("\n{} confirmed issue(s) to fix", confirmed.len());
 
+            let mut plan = Plan::default();
             let (mut verified, mut proven, mut already) = (0, 0, 0);
             let mut queue: Vec<(usize, &review::Judged)> = confirmed.iter().enumerate().collect();
             for round in 1..=2 {
@@ -191,6 +200,19 @@ async fn main() -> Result<()> {
                 for (n, j) in queue {
                     let i = &j.issue;
                     println!("\n=== [{}] {}:{}  {} ===", i.severity.to_uppercase(), i.file, i.line, i.title);
+
+                    // an earlier fix may already have resolved this one: check before spending calls on it
+                    if verified > 0 {
+                        match review::still_present(&provider, &tools, i, max_steps).await {
+                            Ok(v) if v.verdict == "refuted" => {
+                                println!("no longer present after the earlier fixes; skipping ({})", v.reason);
+                                already += 1;
+                                continue;
+                            }
+                            Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
+                            _ => {}
+                        }
+                    }
 
                     let slug = fix::slugify(&i.title, n);
                     let siblings: Vec<review::Issue> = confirmed
@@ -244,6 +266,13 @@ async fn main() -> Result<()> {
                                 } else {
                                     println!("  -> verified by static checks only (no regression test)");
                                 }
+                                plan.items.push(PlanItem {
+                                    title: i.title.clone(),
+                                    summary: o.patch.summary.clone(),
+                                    proven: o.proven,
+                                    edits: o.patch.edits.clone(),
+                                    test: o.test.clone(),
+                                });
                                 // stack it: later issues are checked on top of this fix
                                 fix::apply_edits(&work, &o.patch.edits)?;
                                 if let Some((rel, content)) = &o.test {
@@ -278,14 +307,54 @@ async fn main() -> Result<()> {
                 queue = deferred;
             }
             println!(
-                "\n{verified}/{} fixes verified, {proven} proven by a regression test, {already} likely resolved by earlier fixes",
+                "\n{verified}/{} fixes verified, {proven} proven by a regression test, {already} resolved by earlier fixes",
                 confirmed.len()
             );
+            if !plan.items.is_empty() {
+                let path = real.join(".autoresolve").join("plan.json");
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(&path, serde_json::to_string_pretty(&plan)?)?;
+                println!(
+                    "plan saved to {} ({} fix(es)). Review it, then apply exactly this with:\n  cargo run -p autoresolve-cli -- apply-plan",
+                    path.display(),
+                    plan.items.len()
+                );
+            }
             eprintln!(
                 "[usage] {} model calls (reviewer/skeptic) + {} (tester/fixer/gate)",
                 provider.calls(),
                 strong.calls()
             );
+        }
+        Cmd::ApplyPlan { root, plan } => {
+            let real = root.canonicalize()?;
+            let path = plan.unwrap_or_else(|| real.join(".autoresolve").join("plan.json"));
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {} (run `fix` first)", path.display()))?;
+            let plan: Plan = serde_json::from_str(&text).context("plan file is malformed")?;
+            fix::apply_plan(&real, &plan)?;
+            println!("applied {} fix(es) from {}", plan.items.len(), path.display());
+            for p in &plan.items {
+                println!("  - [{}] {}", if p.proven { "proven" } else { "static checks only" }, p.summary);
+            }
+            // run the saved regression tests against the real repo
+            let mut failed = 0;
+            for p in &plan.items {
+                if let Some((rel, _)) = &p.test {
+                    let (ok, tail) = fix::run_tests(&real, &format!("python3 {rel}"));
+                    println!("  [{}] {rel}", if ok { "PASS" } else { "FAIL" });
+                    if !ok {
+                        failed += 1;
+                        println!("{tail}");
+                    }
+                }
+            }
+            if failed > 0 {
+                std::process::exit(1);
+            }
+            println!("review the result with: git --no-pager diff");
         }
     }
     Ok(())

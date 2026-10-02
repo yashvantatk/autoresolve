@@ -366,7 +366,14 @@ impl Provider for Ollama {
 /// Pick the backend: AUTORESOLVE_PROVIDER=gemini (default) | ollama.
 /// `strong` selects the stronger-model override used by the tester, fixer and patch gate.
 pub fn provider_from_env(strong: bool) -> Result<Box<dyn Provider>> {
-    let which = std::env::var("AUTORESOLVE_PROVIDER").unwrap_or_else(|_| "gemini".into());
+    // the `_STRONG` variables configure the second role (tester, fixer, patch gate)
+    // and fall back to the main ones when unset
+    let var = if strong {
+        std::env::var("AUTORESOLVE_PROVIDER_STRONG").or_else(|_| std::env::var("AUTORESOLVE_PROVIDER"))
+    } else {
+        std::env::var("AUTORESOLVE_PROVIDER")
+    };
+    let which = var.unwrap_or_else(|_| "gemini".into());
     match which.as_str() {
         "gemini" => Ok(Box::new(if strong {
             Gemini::from_env_role("AUTORESOLVE_MODEL_STRONG")?

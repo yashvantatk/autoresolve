@@ -153,3 +153,21 @@ pub async fn review(provider: &dyn Provider, tools: &Tools<'_>, target: &str, ma
     }
     Ok(out)
 }
+const STILL_PRESENT_SYSTEM: &str = "You decide whether a reported bug STILL EXISTS in the current \
+code. Other fixes may already have been applied, so the code and its line numbers may have changed \
+since the report. Read the relevant code with the tools. Verdict `confirmed` means the described \
+problem is still present. Verdict `refuted` means it no longer exists in the current code (cite the \
+lines that show it). Verdict `uncertain` if you cannot tell. Judge only whether the problem is \
+present now, not whether the original report was reasonable. Finish by calling submit_verdict.";
+
+/// After other fixes have landed: is this issue still present in the staged code?
+pub async fn still_present(provider: &dyn Provider, tools: &Tools<'_>, issue: &Issue, max_steps: usize) -> Result<Verdict> {
+    let mut specs = Tools::specs();
+    specs.push(submit_verdict_spec());
+    let task = format!(
+        "Reported bug:\n{}:{} [{}] {}\n{}\n\nIs this problem still present in the current code?",
+        issue.file, issue.line, issue.severity, issue.title, issue.explanation
+    );
+    let out = run_agent(provider, tools, STILL_PRESENT_SYSTEM, &task, specs, "submit_verdict", max_steps).await?;
+    serde_json::from_value(out).context("model returned a malformed verdict")
+}

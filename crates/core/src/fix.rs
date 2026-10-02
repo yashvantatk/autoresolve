@@ -52,6 +52,23 @@ pub struct Outcome {
     pub test: Option<(String, String)>,
 }
 
+/// One verified fix, as saved in the plan file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanItem {
+    pub title: String,
+    pub summary: String,
+    pub proven: bool,
+    pub edits: Vec<Edit>,
+    /// (relative path, content) of the regression test
+    pub test: Option<(String, String)>,
+}
+
+/// Everything a `fix` run verified, in the order it was stacked.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Plan {
+    pub items: Vec<PlanItem>,
+}
+
 fn submit_patch_spec() -> ToolSpec {
     ToolSpec {
         name: "submit_patch",
@@ -79,6 +96,9 @@ fn submit_patch_spec() -> ToolSpec {
 pub struct ReproTest {
     pub description: String,
     pub code: String,
+    /// Text the failure output of the buggy code must contain (e.g. "IndexError").
+    #[serde(default)]
+    pub expected_failure: String,
 }
 
 const TESTER_SYSTEM: &str = "You write regression tests. Given a confirmed bug, write a minimal \
@@ -93,7 +113,11 @@ then call submit_test. Keep the script clean: no commentary about the task or yo
 at most one short comment. If the code under test needs a collaborator object (a cart, a client, \
 a connection), import and use the REAL class from the repo; a stub is allowed only if it implements \
 every method the code calls, under the same names. Never use a list or dict as a stand-in for an \
-object type. The test must fail ONLY because of the claimed bug, and pass for any correct fix.";
+object type. The test must fail ONLY because of the claimed bug, and pass for any correct fix. \
+Also report `expected_failure`: a short text that the failure output of the buggy code will contain, \
+taken from the bug claim. Usually this is an exception class name such as IndexError or TypeError, \
+or AssertionError when the bug is a wrong result. Use an exact message only if you are certain of it. \
+A test that fails in any other way is rejected.";
 
 fn submit_test_spec() -> ToolSpec {
     ToolSpec {
@@ -103,9 +127,10 @@ fn submit_test_spec() -> ToolSpec {
             "type": "object",
             "properties": {
                 "description": {"type": "string", "description": "One sentence: what the test checks."},
-                "code": {"type": "string", "description": "Complete Python source of the script."}
+                "code": {"type": "string", "description": "Complete Python source of the script."},
+                "expected_failure": {"type": "string", "description": "Short text the failure output on the buggy code will contain, e.g. IndexError, TypeError or AssertionError."}
             },
-            "required": ["description", "code"]
+            "required": ["description", "code", "expected_failure"]
         }),
     }
 }
@@ -120,6 +145,31 @@ pub fn slugify(title: &str, n: usize) -> String {
     let s = s.split('_').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("_");
     let s: String = s.chars().take(40).collect();
     format!("{n}_{s}")
+}
+
+/// Drop comment-only lines (models like to think out loud in them) and collapse blank runs.
+fn clean_test_code(code: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for line in code.lines() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if line.trim().is_empty() && out.last().map_or(true, |l| l.trim().is_empty()) {
+            continue;
+        }
+        out.push(line.trim_end());
+    }
+    out.join("\n").trim().to_string()
+}
+
+/// The failure must match what the bug claim predicts. An empty expectation means no check.
+fn matches_expected(tail: &str, expected: &str) -> bool {
+    let e = expected.trim();
+    e.is_empty() || tail.contains(e)
+}
+
+fn last_line(tail: &str) -> String {
+    tail.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
 
 pub fn save_test(root: &Path, rel: &str, content: &str) -> Result<()> {
@@ -141,7 +191,8 @@ fn write_test(dir: &Path, slug: &str, code: &str) -> Result<(String, String)> {
     Ok((rel, content))
 }
 
-/// Reproduction-first: get a test that FAILS on the current code. One retry with feedback.
+/// Reproduction-first: get a test that FAILS on the current code, the way the claim predicts.
+/// One retry with feedback.
 pub async fn reproduce(
     provider: &dyn Provider,
     tools: &Tools<'_>,
@@ -163,7 +214,8 @@ pub async fn reproduce(
             task.push_str(&format!("\n\nYour previous attempt was rejected:\n{feedback}"));
         }
         let out = run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps).await?;
-        let t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
+        let mut t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
+        t.code = clean_test_code(&t.code);
 
         let sandbox = create_sandbox(root, &format!("{slug}-repro{attempt}"))?;
         let (rel, _) = write_test(&sandbox, slug, &t.code)?;
@@ -172,11 +224,17 @@ pub async fn reproduce(
             || tail.contains("ModuleNotFoundError")
             || !fails_for_real(&tail);
         passed_last = ok;
-        if !ok && !broken {
-            return Ok(t); // fails on the buggy code for a real reason, as required
+        if !ok && !broken && matches_expected(&tail, &t.expected_failure) {
+            return Ok(t); // fails on the buggy code, the way the claim predicts
         }
         feedback = if ok {
             "your test PASSED on the current buggy code; it must fail there".to_string()
+        } else if !broken {
+            format!(
+                "your test fails, but not the way the bug claim predicts. You said it would fail with `{}`, but it failed with: {}",
+                t.expected_failure.trim(),
+                last_line(&tail)
+            )
         } else {
             format!("your test is broken, it does not fail because of the bug:\n{tail}")
         };
@@ -256,6 +314,29 @@ pub fn create_sandbox(root: &Path, id: &str) -> Result<PathBuf> {
     Ok(dir.canonicalize()?)
 }
 
+/// Apply a saved plan to the real repo. The whole plan is rehearsed on a scratch copy first,
+/// so a stale plan (the repo changed since) fails without touching anything.
+pub fn apply_plan(root: &Path, plan: &Plan) -> Result<()> {
+    let root = root.canonicalize().context("bad repo root")?;
+    let scratch = create_sandbox(&root, "apply-check")?;
+    for (i, p) in plan.items.iter().enumerate() {
+        apply_edits(&scratch, &p.edits).with_context(|| {
+            format!(
+                "plan item {} ({}) no longer applies; the repo changed since the plan was made. Nothing was written.",
+                i + 1,
+                p.title
+            )
+        })?;
+    }
+    for p in &plan.items {
+        apply_edits(&root, &p.edits)?;
+        if let Some((rel, content)) = &p.test {
+            save_test(&root, rel, content)?;
+        }
+    }
+    Ok(())
+}
+
 /// Static checks on every touched Python file.
 pub fn verify(sandbox: &Path, original_root: &Path, touched: &[String]) -> Vec<Check> {
     let mut checks = Vec::new();
@@ -278,7 +359,7 @@ pub fn verify(sandbox: &Path, original_root: &Path, touched: &[String]) -> Vec<C
     checks
 }
 
-fn run_tests(dir: &Path, cmd: &str) -> (bool, String) {
+pub fn run_tests(dir: &Path, cmd: &str) -> (bool, String) {
     match Command::new("timeout").args(["120", "sh", "-c", cmd]).current_dir(dir).output() {
         Ok(o) => {
             let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -354,7 +435,7 @@ pub async fn review_patch(
 }
 
 /// The regression test errored on the patched code: ask the tester to repair the TEST
-/// (not the patch), then confirm it still fails on the original code.
+/// (not the patch), then confirm it still fails on the original code the way the claim predicts.
 async fn repair_test(
     provider: &dyn Provider,
     tools: &Tools<'_>,
@@ -375,11 +456,17 @@ async fn repair_test(
         issue.file, issue.line, issue.title, issue.explanation, old.code, failure
     );
     let out = run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps).await?;
-    let t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
+    let mut t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
+    t.code = clean_test_code(&t.code);
     let sandbox = create_sandbox(root, &format!("{slug}-repair"))?;
     let (rel, _) = write_test(&sandbox, slug, &t.code)?;
     let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
-    if ok || tail.contains("SyntaxError") || tail.contains("ModuleNotFoundError") || !fails_for_real(&tail) {
+    if ok
+        || tail.contains("SyntaxError")
+        || tail.contains("ModuleNotFoundError")
+        || !fails_for_real(&tail)
+        || !matches_expected(&tail, &t.expected_failure)
+    {
         bail!("the repaired test no longer fails on the original code for the claimed bug");
     }
     Ok(t)
@@ -409,18 +496,19 @@ pub async fn fix_issue(
     let mut last: Option<Outcome> = None;
 
     for attempt in 1..=2 {
-        // if the regression test itself errored on the patched code, let the tester repair it
+        // if the regression test itself looks wrong on the patched code, let the tester repair it
         if let (Some(sl), Some(fail)) = (slug, test_failure.take()) {
             if let Some(old) = current.clone() {
                 match repair_test(provider, tools, issue, &old, &fail, sl, max_steps).await {
                     Ok(t) => {
-                        eprintln!("[fix] regression test rewritten after it errored on the patched code");
+                        eprintln!("[fix] regression test rewritten after it misbehaved on the patched code");
                         current = Some(t);
                     }
                     Err(e) => eprintln!("[fix] could not repair the test: {e}"),
                 }
             }
         }
+        let expected = current.as_ref().map(|t| t.expected_failure.clone()).unwrap_or_default();
 
         let mut specs = Tools::specs();
         specs.push(submit_patch_spec());
@@ -465,8 +553,8 @@ pub async fn fix_issue(
         let mut checks = verify(&sandbox, root, &touched);
         if let Some((rel, _)) = &test_file {
             let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
-            // an error raised only in the test file means the TEST is wrong, not the patch
-            if !ok && !fails_for_real(&tail) {
+            // a failure that is not the one the claim predicts usually means the TEST is wrong
+            if !ok && (!fails_for_real(&tail) || !matches_expected(&tail, &expected)) {
                 test_failure = Some(tail.clone());
             }
             checks.push(Check {
@@ -586,5 +674,53 @@ mod tests {
         let right = "Traceback (most recent call last):\n  File \"/x/autoresolve_regression/test_0.py\", line 9, in <module>\n    add_all(c, [1])\n  File \"/x/buggy.py\", line 15, in add_all\n    check_item(i, strict=True)\nTypeError: check_item() got an unexpected keyword argument 'strict'\n";
         assert!(fails_for_real(right));
         assert!(fails_for_real("Traceback (most recent call last):\nAssertionError: expected 3\n"));
+    }
+
+    #[test]
+    fn failure_must_match_what_the_claim_predicts() {
+        let tail = "Traceback (most recent call last):\nAttributeError: 'list' object has no attribute 'add'\n";
+        assert!(!matches_expected(tail, "unexpected keyword argument 'strict'"));
+        assert!(matches_expected(tail, "AttributeError"));
+        assert!(matches_expected(tail, "  ")); // empty expectation means no check
+        assert_eq!(last_line(tail), "AttributeError: 'list' object has no attribute 'add'");
+    }
+
+    #[test]
+    fn test_code_loses_its_thinking_out_loud() {
+        let raw = "from buggy import f\n\n# Wait, let me re-read the prompt.\n# Hmm.\n\n\nassert f() == 1  # inline comments stay\n";
+        assert_eq!(clean_test_code(raw), "from buggy import f\n\nassert f() == 1  # inline comments stay");
+    }
+
+    #[test]
+    fn plan_applies_in_order_or_not_at_all() {
+        let d = tmp("plan");
+        std::fs::write(d.join("a.py"), "x = 1\n").unwrap();
+        let plan = Plan {
+            items: vec![
+                PlanItem {
+                    title: "a".into(),
+                    summary: String::new(),
+                    proven: false,
+                    edits: vec![edit("a.py", "x = 1", "x = 2")],
+                    test: None,
+                },
+                PlanItem {
+                    title: "b".into(),
+                    summary: String::new(),
+                    proven: true,
+                    // stacked: this edit only matches after the first one is applied
+                    edits: vec![edit("a.py", "x = 2", "x = 3")],
+                    test: Some(("autoresolve_regression/test_b.py".into(), "pass\n".into())),
+                },
+            ],
+        };
+        apply_plan(&d, &plan).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "x = 3\n");
+        assert!(d.join("autoresolve_regression/test_b.py").exists());
+
+        // a stale plan (the file changed since) must not touch anything
+        std::fs::write(d.join("a.py"), "y = 0\n").unwrap();
+        assert!(apply_plan(&d, &plan).is_err());
+        assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "y = 0\n");
     }
 }
