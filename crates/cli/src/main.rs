@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use autoresolve_core::agent::Tools;
-use autoresolve_core::review;
-use autoresolve_core::graph::{self, FileGraph, Graph};
-use autoresolve_core::llm::Gemini;
 use autoresolve_core::fix;
+use autoresolve_core::graph::{self, FileGraph, Graph};
+use autoresolve_core::llm::{self, Provider};
+use autoresolve_core::review;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -40,7 +40,7 @@ enum Cmd {
     Callees { name: String },
     /// List every indexed symbol
     Symbols,
-    /// Agentic code review of a file (needs GEMINI_API_KEY)
+    /// Agentic code review of a file (Gemini needs GEMINI_API_KEY; or AUTORESOLVE_PROVIDER=ollama)
     Review {
         file: PathBuf,
         /// Repository root the agent may read from
@@ -50,7 +50,7 @@ enum Cmd {
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
     },
-        /// Review a file, then generate and verify a fix for each confirmed issue
+    /// Review a file, then generate and verify a fix for each confirmed issue
     Fix {
         file: PathBuf,
         #[arg(long, default_value = ".")]
@@ -149,7 +149,7 @@ async fn main() -> Result<()> {
             }
         }
         Cmd::Review { file, root, max_steps } => {
-            let provider = Gemini::from_env()?;
+            let provider = llm::provider_from_env(false)?;
             index_repo(&root, &cli.db)?; // always review against a fresh graph
             let graph = Graph::open(&cli.db)?;
             let tools = Tools::new(&graph, &root)?;
@@ -168,12 +168,11 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-            eprintln!("[usage] {} API calls", provider.calls());
+            eprintln!("[usage] {} model calls", provider.calls());
         }
         Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
-            let provider = Gemini::from_env()?; // reviewer and skeptic
-            // tester, fixer and patch gate; set AUTORESOLVE_MODEL_STRONG to give them a stronger model
-            let strong = Gemini::from_env_role("AUTORESOLVE_MODEL_STRONG")?;
+            let provider = llm::provider_from_env(false)?; // reviewer and skeptic
+            let strong = llm::provider_from_env(true)?; // tester, fixer and patch gate
             index_repo(&root, &cli.db)?;
             let graph = Graph::open(&cli.db)?;
             let real = root.canonicalize()?;
@@ -207,12 +206,12 @@ async fn main() -> Result<()> {
                             println!("regression test: {} (fails on the current code, as it should)", t.description);
                             Some(t)
                         }
+                        Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
                         Err(e) if e.to_string().contains("looks already fixed") => {
                             println!("a test for this bug already passes: an earlier fix probably resolved it; skipping");
                             already += 1;
                             continue;
                         }
-                        Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
                         Err(e) => {
                             println!("could not reproduce the bug with a test ({e}); the fix will be unproven");
                             None
@@ -283,7 +282,7 @@ async fn main() -> Result<()> {
                 confirmed.len()
             );
             eprintln!(
-                "[usage] {} API calls (reviewer/skeptic) + {} (tester/fixer/gate)",
+                "[usage] {} model calls (reviewer/skeptic) + {} (tester/fixer/gate)",
                 provider.calls(),
                 strong.calls()
             );

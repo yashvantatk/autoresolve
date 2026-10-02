@@ -1,5 +1,5 @@
 use crate::agent::{run_agent, Tools};
-use crate::llm::{Provider, ToolSpec};
+use crate::llm::{Provider, ToolCall, ToolSpec};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -80,9 +80,42 @@ pub fn submit_verdict_spec() -> ToolSpec {
 pub async fn find_issues(provider: &dyn Provider, tools: &Tools<'_>, target: &str, max_steps: usize) -> Result<Vec<Issue>> {
     let mut specs = Tools::specs();
     specs.push(submit_findings_spec());
-    let task = format!("Review `{target}` for real bugs and security problems.");
+
+    // Deterministic AST detectors run first; their findings become candidates for the model to verify.
+    let hints = tools.call(&ToolCall { name: "static_findings".into(), args: json!({"file": target}) });
+    let hint_text = hints
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|f| {
+                    format!(
+                        "- line {}: [{}] {}",
+                        f["line"],
+                        f["rule"].as_str().unwrap_or(""),
+                        f["message"].as_str().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+
+    let mut task = format!(
+        "Review `{target}` for real bugs and security problems. Start by reading the file with \
+         read_lines (up to 200 lines per call), then call submit_findings."
+    );
+    if !hint_text.is_empty() {
+        eprintln!("[reviewer] static scanner found candidates:\n{hint_text}");
+        task.push_str(&format!(
+            "\n\nA deterministic scanner already flagged these candidates:\n{hint_text}\n\
+             Verify each against the code and include the real ones. Then look for problems the scanner \
+             cannot see, such as wrong arguments, wrong indexes, unhandled edge cases and logic errors."
+        ));
+    }
+
     let out = run_agent(provider, tools, REVIEWER_SYSTEM, &task, specs, "submit_findings", max_steps).await?;
     if out["findings"].is_null() {
+        eprintln!("[reviewer] submitted no `findings` field (treating as no issues): {out}");
         return Ok(vec![]); // models sometimes omit an empty list
     }
     serde_json::from_value(out["findings"].clone()).context("model returned malformed findings")

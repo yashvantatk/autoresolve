@@ -40,7 +40,25 @@ pub trait Provider: Send + Sync {
         history: &[Message],
         tools: &[ToolSpec],
     ) -> Result<ModelTurn>;
+
+    /// Successful API calls so far (for the usage line).
+    fn calls(&self) -> usize {
+        0
+    }
 }
+
+/// Lets `Box<dyn Provider>` be passed anywhere a provider is expected.
+#[async_trait]
+impl Provider for Box<dyn Provider> {
+    async fn complete(&self, system: &str, history: &[Message], tools: &[ToolSpec]) -> Result<ModelTurn> {
+        (**self).complete(system, history, tools).await
+    }
+    fn calls(&self) -> usize {
+        (**self).calls()
+    }
+}
+
+// ---------- Gemini ----------
 
 pub struct Gemini {
     key: String,
@@ -52,25 +70,21 @@ pub struct Gemini {
 impl Gemini {
     pub fn from_env() -> Result<Self> {
         let key = std::env::var("GEMINI_API_KEY").context("set the GEMINI_API_KEY environment variable")?;
-        let model = std::env::var("AUTORESOLVE_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".into());
+        let model = std::env::var("AUTORESOLVE_MODEL").unwrap_or_else(|_| "gemini-3.1-flash-lite".into());
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
             .timeout(std::time::Duration::from_secs(180))
-            .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .build()?;
-            Ok(Self { key, model, http, calls: AtomicUsize::new(0) })
+        Ok(Self { key, model, http, calls: AtomicUsize::new(0) })
     }
-        /// Like `from_env`, but a role-specific env var can override the model.
+
+    /// Like `from_env`, but a role-specific env var can override the model.
     pub fn from_env_role(var: &str) -> Result<Self> {
         let mut g = Self::from_env()?;
         if let Ok(m) = std::env::var(var) {
             g.model = m;
         }
         Ok(g)
-    }
-        /// Successful API calls made by this client so far.
-    pub fn calls(&self) -> usize {
-        self.calls.load(Ordering::Relaxed)
     }
 }
 
@@ -113,7 +127,7 @@ impl Provider for Gemini {
             "contents": to_contents(history),
             "tools": [{"functionDeclarations": decls}],
         });
-                // Optional: cap the model's hidden reasoning to make agent steps faster.
+        // Optional: cap the model's hidden reasoning to make agent steps faster.
         if let Ok(level) = std::env::var("AUTORESOLVE_THINKING") {
             body["generationConfig"] = json!({"thinkingConfig": {"thinkingLevel": level}});
         }
@@ -151,7 +165,7 @@ impl Provider for Gemini {
                 bail!(
                     "QUOTA_EXHAUSTED: the daily request quota for {} is used up. It usually resets at \
                      midnight Pacific time. Meanwhile set AUTORESOLVE_MODEL to another model (each model \
-                     has its own quota).",
+                     has its own quota), or use AUTORESOLVE_PROVIDER=ollama.",
                     self.model
                 );
             }
@@ -185,6 +199,142 @@ impl Provider for Gemini {
             }
         }
         Ok(ModelTurn { text, calls, raw: content })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
+    }
+}
+
+// ---------- Ollama: local models, no key, no quota ----------
+
+pub struct Ollama {
+    host: String,
+    model: String,
+    num_ctx: u32,
+    think: Option<bool>,
+    http: reqwest::Client,
+    calls: AtomicUsize,
+}
+
+impl Ollama {
+    pub fn from_env() -> Result<Self> {
+        Self::build(None)
+    }
+
+    /// Role-specific model override (e.g. for the tester/fixer/gate).
+    pub fn from_env_role(var: &str) -> Result<Self> {
+        Self::build(std::env::var(var).ok())
+    }
+
+    fn build(model_override: Option<String>) -> Result<Self> {
+        let host = std::env::var("AUTORESOLVE_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
+        let model = model_override
+            .or_else(|| std::env::var("AUTORESOLVE_OLLAMA_MODEL").ok())
+            .unwrap_or_else(|| "qwen3:8b".into());
+        let num_ctx = std::env::var("AUTORESOLVE_NUM_CTX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8192);
+        // only sent when set: AUTORESOLVE_OLLAMA_THINK=false turns off reasoning on thinking models
+        let think = std::env::var("AUTORESOLVE_OLLAMA_THINK").ok().map(|s| s == "true" || s == "1");
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(900)) // first call also loads the model
+            .build()?;
+        Ok(Self { host, model, num_ctx, think, http, calls: AtomicUsize::new(0) })
+    }
+}
+
+#[async_trait]
+impl Provider for Ollama {
+    async fn complete(&self, system: &str, history: &[Message], tools: &[ToolSpec]) -> Result<ModelTurn> {
+        let mut messages = vec![json!({"role": "system", "content": system})];
+        for m in history {
+            match m {
+                Message::User(t) => messages.push(json!({"role": "user", "content": t})),
+                Message::Model(turn) => messages.push(turn.raw.clone()),
+                Message::ToolResults(rs) => {
+                    for (name, v) in rs {
+                        messages.push(json!({"role": "tool", "tool_name": name, "content": v.to_string()}));
+                    }
+                }
+            }
+        }
+        let tool_defs: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                json!({"type": "function",
+                       "function": {"name": t.name, "description": t.description, "parameters": t.parameters}})
+            })
+            .collect();
+        let mut body = json!({
+            "model": self.model,
+            "messages": messages,
+            "tools": tool_defs,
+            "stream": false,
+            "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
+        });
+        if let Some(t) = self.think {
+            body["think"] = json!(t);
+        }
+
+        eprintln!("[waiting for {} (ollama) ...]", self.model);
+        let url = format!("{}/api/chat", self.host);
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("cannot reach Ollama at {} (is `ollama serve` running?)", self.host))?;
+        let status = resp.status();
+        let v: Value = resp.json().await?;
+        if !status.is_success() {
+            bail!("Ollama error {status}: {v}");
+        }
+        self.calls.fetch_add(1, Ordering::Relaxed);
+
+        let msg = v["message"].clone();
+        if msg.is_null() {
+            bail!("no message in response: {v}");
+        }
+        let text = msg["content"].as_str().unwrap_or("").to_string();
+        let mut calls = Vec::new();
+        for c in msg["tool_calls"].as_array().cloned().unwrap_or_default() {
+            let mut args = c["function"]["arguments"].clone();
+            // some models return the arguments as a JSON string
+            if let Some(s) = args.as_str() {
+                if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+                    args = parsed;
+                }
+            }
+            calls.push(ToolCall { name: c["function"]["name"].as_str().unwrap_or("").to_string(), args });
+        }
+        Ok(ModelTurn { text, calls, raw: msg })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
+    }
+}
+
+/// Pick the backend: AUTORESOLVE_PROVIDER=gemini (default) | ollama.
+/// `strong` selects the stronger-model override used by the tester, fixer and patch gate.
+pub fn provider_from_env(strong: bool) -> Result<Box<dyn Provider>> {
+    let which = std::env::var("AUTORESOLVE_PROVIDER").unwrap_or_else(|_| "gemini".into());
+    match which.as_str() {
+        "gemini" => Ok(Box::new(if strong {
+            Gemini::from_env_role("AUTORESOLVE_MODEL_STRONG")?
+        } else {
+            Gemini::from_env()?
+        })),
+        "ollama" => Ok(Box::new(if strong {
+            Ollama::from_env_role("AUTORESOLVE_OLLAMA_MODEL_STRONG")?
+        } else {
+            Ollama::from_env()?
+        })),
+        other => bail!("unknown AUTORESOLVE_PROVIDER `{other}` (use gemini or ollama)"),
     }
 }
 

@@ -127,9 +127,9 @@ impl<'a> Tools<'a> {
     }
 }
 
-/// The agent loop: ask the model, run the tools it requests, repeat until it answers.
 /// Generic agent loop. Runs until the model calls the `terminal` tool,
 /// then returns that call's arguments (structured output).
+/// The terminal tool is refused until the model has used at least one other tool.
 pub async fn run_agent(
     provider: &dyn Provider,
     tools: &Tools<'_>,
@@ -141,14 +141,12 @@ pub async fn run_agent(
 ) -> Result<Value> {
     let mut history = vec![Message::User(task.to_string())];
     let mut seen_calls = std::collections::HashSet::new();
+    let mut used_tool = false; // the model must look at the code before it may submit
     for step in 1..=max_steps {
         let turn = provider.complete(system, &history, &specs).await?;
         let calls = turn.calls.clone();
         history.push(Message::Model(turn));
 
-        if let Some(done) = calls.iter().find(|c| c.name == terminal) {
-            return Ok(done.args.clone());
-        }
         if calls.is_empty() {
             eprintln!("[step {step}] model answered in prose; asking it to call `{terminal}`");
             history.push(Message::User(format!(
@@ -156,8 +154,24 @@ pub async fn run_agent(
             )));
             continue;
         }
+
+        let used_before = used_tool;
+        let mut done: Option<Value> = None;
         let mut results = Vec::new();
         for c in &calls {
+            if c.name == terminal {
+                if used_before {
+                    done = Some(c.args.clone());
+                } else {
+                    eprintln!("[step {step}] `{terminal}` called before reading any code; sending the model back to investigate");
+                    results.push((
+                        c.name.clone(),
+                        json!({"error": format!("Too early: you have not looked at any code yet. Use list_symbols and read_lines first, then call `{terminal}`.")}),
+                    ));
+                }
+                continue;
+            }
+            used_tool = true;
             let result = if seen_calls.insert(format!("{}:{}", c.name, c.args)) {
                 eprintln!("[step {step}] {}({})", c.name, c.args);
                 tools.call(c)
@@ -166,6 +180,9 @@ pub async fn run_agent(
                 json!({"error": format!("You already made this exact call and have its result above. Do not repeat it; call `{terminal}` now.")})
             };
             results.push((c.name.clone(), result));
+        }
+        if let Some(args) = done {
+            return Ok(args);
         }
         history.push(Message::ToolResults(results));
     }
@@ -262,5 +279,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["ok"], true);
+    }
+        /// Lazy fake model: tries to submit at once, then investigates after being sent back.
+    struct Lazy(Mutex<usize>);
+
+    #[async_trait]
+    impl Provider for Lazy {
+        async fn complete(&self, _s: &str, history: &[Message], _t: &[ToolSpec]) -> Result<ModelTurn> {
+            let mut n = self.0.lock().unwrap();
+            *n += 1;
+            let call = |name: &str| ModelTurn {
+                text: String::new(),
+                calls: vec![ToolCall { name: name.into(), args: json!({"n": 1}) }],
+                raw: json!({}),
+            };
+            match *n {
+                1 => Ok(call("submit")),
+                2 => {
+                    match history.last() {
+                        Some(Message::ToolResults(rs)) => {
+                            assert!(rs[0].1["error"].as_str().unwrap().contains("Too early"))
+                        }
+                        _ => panic!("expected the rejection"),
+                    }
+                    Ok(call("list_symbols"))
+                }
+                _ => Ok(call("submit")),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn submitting_before_investigating_is_rejected() {
+        let graph = Graph::open(Path::new(":memory:")).unwrap();
+        let tools = Tools::new(&graph, Path::new(".")).unwrap();
+        let out = run_agent(&Lazy(Mutex::new(0)), &tools, "sys", "task", vec![], "submit", 6)
+            .await
+            .unwrap();
+        assert_eq!(out["n"], 1);
     }
 }
