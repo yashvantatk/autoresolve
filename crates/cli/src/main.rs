@@ -4,6 +4,7 @@ use autoresolve_core::fix::{self, Plan, PlanItem};
 use autoresolve_core::graph::{self, FileGraph, Graph};
 use autoresolve_core::llm::{self, Provider};
 use autoresolve_core::policy::Policy;
+use autoresolve_core::report;
 use autoresolve_core::review;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,27 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// Report formats for `scan` and `review`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Format {
+    Text,
+    Json,
+    Markdown,
+    Sarif,
+}
+
+/// Print a report, or write it to a file when --out is given.
+fn emit(out: &Option<PathBuf>, text: &str) -> Result<()> {
+    match out {
+        Some(p) => {
+            std::fs::write(p, text)?;
+            eprintln!("[report] wrote {}", p.display());
+        }
+        None => println!("{text}"),
+    }
+    Ok(())
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Print the syntax tree of a Python file
@@ -26,9 +48,15 @@ enum Cmd {
     Scan {
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Emit findings as JSON (for CI and tooling)
+        /// Emit findings as JSON (for CI and tooling); same as --format json
         #[arg(long)]
         json: bool,
+        /// Output format: text, json or sarif
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+        /// Write the report to this file instead of printing it
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Index functions, classes and calls into the repo graph
     Index {
@@ -50,6 +78,12 @@ enum Cmd {
         /// Maximum agent steps before giving up
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
+        /// Output format: text, json, markdown or sarif
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+        /// Write the report to this file instead of printing it
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Review a file, then generate and verify a fix for each confirmed issue (saves a plan)
     Fix {
@@ -122,14 +156,20 @@ async fn main() -> Result<()> {
             autoresolve_core::dump(tree.root_node(), &src, 0, &mut out);
             print!("{out}");
         }
-        Cmd::Scan { path, json } => {
+        Cmd::Scan { path, json, format, out } => {
             let mut findings = Vec::new();
             for p in python_files(&path)? {
                 let Ok(src) = std::fs::read_to_string(&p) else { continue };
                 findings.extend(autoresolve_core::detectors::scan_python(&p, &src)?);
             }
-            if json {
-                println!("{}", serde_json::to_string_pretty(&findings)?);
+            let format = if json { Format::Json } else { format };
+            if format == Format::Markdown {
+                anyhow::bail!("scan supports text, json and sarif (markdown is for review)");
+            }
+            if format == Format::Json {
+                emit(&out, &serde_json::to_string_pretty(&findings)?)?;
+            } else if format == Format::Sarif {
+                emit(&out, &serde_json::to_string_pretty(&report::sarif_from_scan(&findings))?)?;
             } else {
                 for f in &findings {
                     println!("{}:{}:{}  [{}] {}", f.file.display(), f.line, f.col, f.rule, f.message);
@@ -166,13 +206,22 @@ async fn main() -> Result<()> {
                 println!("{file}:{start}-{end}  {kind:<8} {qualname}");
             }
         }
-        Cmd::Review { file, root, max_steps } => {
+        Cmd::Review { file, root, max_steps, format, out } => {
             let provider = llm::provider_from_env(false)?;
             index_repo(&root, &cli.db)?; // always review against a fresh graph
             let graph = Graph::open(&cli.db)?;
             let tools = Tools::new(&graph, &root)?;
             let judged = review::review(&provider, &tools, &file.display().to_string(), max_steps).await?;
+            match format {
+                Format::Json => emit(&out, &serde_json::to_string_pretty(&judged)?)?,
+                Format::Markdown => emit(&out, &report::markdown_from_review(&judged))?,
+                Format::Sarif => emit(&out, &serde_json::to_string_pretty(&report::sarif_from_review(&judged))?)?,
+                Format::Text => {}
+            }
             for (label, want) in [("CONFIRMED", "confirmed"), ("UNCERTAIN", "uncertain"), ("REFUTED by skeptic", "refuted")] {
+                if format != Format::Text {
+                    break;
+                }
                 let group: Vec<_> = judged.iter().filter(|j| j.verdict.verdict == want).collect();
                 if group.is_empty() {
                     continue;
@@ -243,10 +292,11 @@ async fn main() -> Result<()> {
                             Some(t)
                         }
                         Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
+                        // Not evidence that the bug is gone: only the still-present check above may skip an
+                        // issue as resolved. A passing test here more likely means the test is wrong.
                         Err(e) if e.to_string().contains("looks already fixed") => {
-                            println!("a test for this bug already passes: an earlier fix probably resolved it; skipping");
-                            already += 1;
-                            continue;
+                            println!("the tests written for this bug pass on the current code, so it was not reproduced; the fix will be unproven");
+                            None
                         }
                         Err(e) => {
                             println!("could not reproduce the bug with a test ({e}); the fix will be unproven");

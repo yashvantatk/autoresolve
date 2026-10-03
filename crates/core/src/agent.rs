@@ -152,6 +152,19 @@ pub async fn run_agent(
 
         if calls.is_empty() {
             prose_streak += 1;
+            // a model that never touches a tool cannot be forced into structured output (it has not
+            // seen the code), so tell it to look, and stop early instead of burning every step
+            if !used_tool {
+                if prose_streak >= 4 {
+                    bail!("the model answered in prose {prose_streak} times without using any tool; giving up on this attempt");
+                }
+                eprintln!("[step {step}] model answered in prose before reading any code; telling it to use a tool");
+                history.push(Message::User(format!(
+                    "You have not looked at the code yet. Call `list_symbols` or `read_lines` now (a tool call, not prose), \
+                     then finish by calling `{terminal}`."
+                )));
+                continue;
+            }
             if prose_streak >= 2 && used_tool {
                 if let Some(spec) = specs.iter().find(|s| s.name == terminal) {
                     match provider.complete_json(system, &history, &spec.parameters).await {
@@ -373,5 +386,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["verdict"], "confirmed");
+    }
+
+    /// Fake model that only ever writes prose and never calls a tool.
+    struct ProseOnly(Mutex<usize>);
+
+    #[async_trait]
+    impl Provider for ProseOnly {
+        async fn complete(&self, _s: &str, _h: &[Message], _t: &[ToolSpec]) -> Result<ModelTurn> {
+            *self.0.lock().unwrap() += 1;
+            Ok(ModelTurn { text: "let me think about it".into(), calls: vec![], raw: json!({}) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_model_that_never_uses_a_tool_is_stopped_early() {
+        let graph = Graph::open(Path::new(":memory:")).unwrap();
+        let tools = Tools::new(&graph, Path::new(".")).unwrap();
+        let model = ProseOnly(Mutex::new(0));
+        let err = run_agent(&model, &tools, "sys", "task", vec![], "submit", 12).await.unwrap_err();
+        assert!(err.to_string().contains("without using any tool"));
+        assert_eq!(*model.0.lock().unwrap(), 4); // not 12
     }
 }

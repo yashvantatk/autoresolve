@@ -117,7 +117,11 @@ object type. The test must fail ONLY because of the claimed bug, and pass for an
 Also report `expected_failure`: a short text that the failure output of the buggy code will contain, \
 taken from the bug claim. Usually this is an exception class name such as IndexError or TypeError, \
 or AssertionError when the bug is a wrong result. Use an exact message only if you are certain of it. \
-A test that fails in any other way is rejected.";
+A test that fails in any other way is rejected. Test observable behavior only: call the code the way \
+a caller would and assert on what it returns or does. Never inspect the implementation (no \
+`__defaults__`, `__code__`, `inspect`, `ast`, or reading source files); such tests are rejected. For a \
+mutable-default-argument bug, call the function twice without the argument and assert that the second \
+result carries no data from the first call.";
 
 fn submit_test_spec() -> ToolSpec {
     ToolSpec {
@@ -160,6 +164,28 @@ fn clean_test_code(code: &str) -> String {
         out.push(line.trim_end());
     }
     out.join("\n").trim().to_string()
+}
+
+/// A regression test must exercise behavior, not poke at the implementation. A test that reads
+/// `__defaults__` or the source "fails" on the bug and then fails on every correct fix too.
+fn inspects_implementation(code: &str) -> Option<&'static str> {
+    const MARKERS: [&str; 8] = [
+        "__defaults__",
+        "__kwdefaults__",
+        "__code__",
+        "getsource",
+        "import inspect",
+        "from inspect",
+        "import ast",
+        "from ast",
+    ];
+    if let Some(m) = MARKERS.iter().find(|m| code.contains(**m)) {
+        return Some(m);
+    }
+    if code.contains(".py") && (code.contains("open(") || code.contains("read_text(")) {
+        return Some("reading source files");
+    }
+    None
 }
 
 /// The failure must match what the bug claim predicts. An empty expectation means no check.
@@ -218,6 +244,15 @@ pub async fn reproduce(
         let out = run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps).await?;
         let mut t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
         t.code = clean_test_code(&t.code);
+        if let Some(why) = inspects_implementation(&t.code) {
+            feedback = format!(
+                "your test inspects the implementation (`{why}`) instead of behavior. Call the code the way a caller \
+                 would and assert on what it returns or does"
+            );
+            passed_last = false;
+            eprintln!("[repro] attempt {attempt} rejected: {feedback}");
+            continue;
+        }
 
         let sandbox = create_sandbox(root, &format!("{slug}-repro{attempt}"))?;
         let (rel, _) = write_test(&sandbox, slug, &t.code)?;
@@ -392,6 +427,10 @@ pub fn verify(sandbox: &Path, original_root: &Path, touched: &[String]) -> Vec<C
             passed: after <= before,
             detail: format!("{before} -> {after} findings"),
         });
+        // ruff + bandit + mypy inside the sandbox (skipped, with one note, if the image lacks them)
+        if let Some(c) = crate::lint::check(sandbox, original_root, f) {
+            checks.push(c);
+        }
     }
     checks
 }
@@ -488,6 +527,9 @@ async fn repair_test(
     let out = run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps).await?;
     let mut t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
     t.code = clean_test_code(&t.code);
+    if inspects_implementation(&t.code).is_some() {
+        bail!("the repaired test inspects the implementation instead of behavior");
+    }
     let sandbox = create_sandbox(root, &format!("{slug}-repair"))?;
     let (rel, _) = write_test(&sandbox, slug, &t.code)?;
     let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
@@ -843,5 +885,14 @@ mod tests {
         std::os::unix::fs::symlink(&victim, d.join(".autoresolve/sandbox")).unwrap();
         clean_scratch(&d);
         assert!(victim.join("precious.txt").exists());
+    }
+
+    #[test]
+    fn tests_may_not_inspect_the_implementation() {
+        assert!(inspects_implementation("assert f.__defaults__[0] == []").is_some());
+        assert!(inspects_implementation("import inspect\nprint(inspect.getsource(f))").is_some());
+        assert!(inspects_implementation("src = open('buggy.py').read()").is_some());
+        let behavioral = "from m import add_tag\nfirst = add_tag('a')\nsecond = add_tag('b')\nassert second == ['b']";
+        assert!(inspects_implementation(behavioral).is_none());
     }
 }
