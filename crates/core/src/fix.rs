@@ -241,7 +241,7 @@ pub async fn reproduce(
         if !feedback.is_empty() {
             task.push_str(&format!("\n\nYour previous attempt was rejected:\n{feedback}"));
         }
-        let out = run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps).await?;
+        let out = crate::events::scope("tester", run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps)).await?;
         let mut t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
         t.code = clean_test_code(&t.code);
         if let Some(why) = inspects_implementation(&t.code) {
@@ -499,7 +499,7 @@ pub async fn review_patch(
             "\n\nOther confirmed bugs in this repo:\n{others}\nA change that fixes one of these is acceptable only if it is minimal and needed to exercise the claimed bug."
         ));
     }
-    let out = run_agent(provider, tools, PATCH_REVIEWER_SYSTEM, &task, specs, "submit_verdict", max_steps).await?;
+    let out = crate::events::scope("gate", run_agent(provider, tools, PATCH_REVIEWER_SYSTEM, &task, specs, "submit_verdict", max_steps)).await?;
     serde_json::from_value(out).context("model returned a malformed verdict")
 }
 
@@ -524,7 +524,7 @@ async fn repair_test(
          It must still fail on the original buggy code because of the claimed bug, and pass once the bug is fixed.",
         issue.file, issue.line, issue.title, issue.explanation, old.code, failure
     );
-    let out = run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps).await?;
+    let out = crate::events::scope("tester", run_agent(provider, tools, TESTER_SYSTEM, &task, specs, "submit_test", max_steps)).await?;
     let mut t: ReproTest = serde_json::from_value(out).context("model returned a malformed test")?;
     t.code = clean_test_code(&t.code);
     if inspects_implementation(&t.code).is_some() {
@@ -607,7 +607,7 @@ pub async fn fix_issue(
         if !feedback.is_empty() {
             task.push_str(&format!("\n\nYour previous attempt failed:\n{feedback}\nFix that and try again."));
         }
-        let out = run_agent(provider, tools, FIXER_SYSTEM, &task, specs, "submit_patch", max_steps).await?;
+        let out = crate::events::scope("fixer", run_agent(provider, tools, FIXER_SYSTEM, &task, specs, "submit_patch", max_steps)).await?;
         let patch: Patch = serde_json::from_value(out).context("model returned a malformed patch")?;
 
         // policy first: a patch that touches protected paths or is too large never reaches the sandbox

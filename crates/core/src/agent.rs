@@ -146,7 +146,26 @@ pub async fn run_agent(
     let mut used_tool = false; // the model must look at the code before it may submit
     let mut prose_streak = 0; // consecutive answers in prose instead of a tool call
     for step in 1..=max_steps {
-        let turn = provider.complete(system, &history, &specs).await?;
+        let t0 = std::time::Instant::now();
+        let turn = match provider.complete(system, &history, &specs).await {
+            Ok(t) => t,
+            Err(e) => {
+                crate::events::emit(
+                    "model_error",
+                    json!({"step": step, "error": crate::events::truncate(&e.to_string(), 300)}),
+                );
+                return Err(e);
+            }
+        };
+        crate::events::emit(
+            "model_turn",
+            json!({
+                "step": step,
+                "ms": t0.elapsed().as_millis() as u64,
+                "text": crate::events::truncate(&turn.text, 600),
+                "tool_calls": turn.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+            }),
+        );
         let calls = turn.calls.clone();
         history.push(Message::Model(turn));
 
@@ -170,6 +189,7 @@ pub async fn run_agent(
                     match provider.complete_json(system, &history, &spec.parameters).await {
                         Ok(v) => {
                             eprintln!("[step {step}] model kept answering in prose; forced structured output for `{terminal}`");
+                            crate::events::emit("terminal_forced", json!({"step": step, "tool": terminal, "args": v}));
                             return Ok(v);
                         }
                         Err(e) => eprintln!("[step {step}] structured output unavailable ({e})"),
@@ -190,6 +210,7 @@ pub async fn run_agent(
         for c in &calls {
             if c.name == terminal {
                 if used_before {
+                    crate::events::emit("terminal", json!({"step": step, "tool": terminal, "args": c.args}));
                     done = Some(c.args.clone());
                 } else {
                     eprintln!("[step {step}] `{terminal}` called before reading any code; sending the model back to investigate");
@@ -201,13 +222,24 @@ pub async fn run_agent(
                 continue;
             }
             used_tool = true;
-            let result = if seen_calls.insert(format!("{}:{}", c.name, c.args)) {
+            let fresh = seen_calls.insert(format!("{}:{}", c.name, c.args));
+            let result = if fresh {
                 eprintln!("[step {step}] {}({})", c.name, c.args);
                 tools.call(c)
             } else {
                 eprintln!("[step {step}] repeated call {}; telling the model to wrap up", c.name);
                 json!({"error": format!("You already made this exact call and have its result above. Do not repeat it; call `{terminal}` now.")})
             };
+            crate::events::emit(
+                "tool_call",
+                json!({
+                    "step": step,
+                    "name": c.name,
+                    "args": c.args,
+                    "result": crate::events::truncate(&result.to_string(), 1200),
+                    "repeated": !fresh
+                }),
+            );
             results.push((c.name.clone(), result));
         }
         if let Some(args) = done {

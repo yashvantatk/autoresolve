@@ -117,7 +117,7 @@ pub async fn find_issues(provider: &dyn Provider, tools: &Tools<'_>, target: &st
         ));
     }
 
-    let out = run_agent(provider, tools, REVIEWER_SYSTEM, &task, specs, "submit_findings", max_steps).await?;
+    let out = crate::events::scope("reviewer", run_agent(provider, tools, REVIEWER_SYSTEM, &task, specs, "submit_findings", max_steps)).await?;
     if out["findings"].is_null() {
         eprintln!("[reviewer] submitted no `findings` field (treating as no issues): {out}");
         return Ok(vec![]); // models sometimes omit an empty list
@@ -132,7 +132,7 @@ pub async fn challenge(provider: &dyn Provider, tools: &Tools<'_>, issue: &Issue
         "Claim to challenge:\n{}:{} [{}] {}\n{}\nProposed fix: {}",
         issue.file, issue.line, issue.severity, issue.title, issue.explanation, issue.fix
     );
-    let out = run_agent(provider, tools, SKEPTIC_SYSTEM, &task, specs, "submit_verdict", max_steps).await?;
+    let out = crate::events::scope("skeptic", run_agent(provider, tools, SKEPTIC_SYSTEM, &task, specs, "submit_verdict", max_steps)).await?;
     serde_json::from_value(out).context("model returned a malformed verdict")
 }
 
@@ -168,6 +168,6 @@ pub async fn still_present(provider: &dyn Provider, tools: &Tools<'_>, issue: &I
         "Reported bug:\n{}:{} [{}] {}\n{}\n\nIs this problem still present in the current code?",
         issue.file, issue.line, issue.severity, issue.title, issue.explanation
     );
-    let out = run_agent(provider, tools, STILL_PRESENT_SYSTEM, &task, specs, "submit_verdict", max_steps).await?;
+    let out = crate::events::scope("still_present", run_agent(provider, tools, STILL_PRESENT_SYSTEM, &task, specs, "submit_verdict", max_steps)).await?;
     serde_json::from_value(out).context("model returned a malformed verdict")
 }

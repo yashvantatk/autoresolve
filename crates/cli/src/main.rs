@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use autoresolve_core::agent::Tools;
+use autoresolve_core::events;
 use autoresolve_core::fix::{self, Plan, PlanItem};
 use autoresolve_core::graph::{self, FileGraph, Graph};
 use autoresolve_core::llm::{self, Provider};
@@ -98,6 +99,20 @@ enum Cmd {
         apply: bool,
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
+    },
+    /// Summarize a recorded run: per-role model calls, time, tool use and outcome (no models involved)
+    Events {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Run id to show (default: the latest run)
+        #[arg(long)]
+        run: Option<String>,
+        /// List all recorded runs
+        #[arg(long)]
+        list: bool,
+        /// Print the raw JSON events of the run
+        #[arg(long)]
+        raw: bool,
     },
     /// Apply the plan saved by the last `fix` run, exactly as reviewed (no models involved)
     ApplyPlan {
@@ -208,10 +223,19 @@ async fn main() -> Result<()> {
         }
         Cmd::Review { file, root, max_steps, format, out } => {
             let provider = llm::provider_from_env(false)?;
+            events::init(&root.canonicalize()?.join(".autoresolve").join(events::LOG_FILE), &events::new_run_id())?;
+            events::emit("run_start", events::run_config("review", &file.display().to_string()));
             index_repo(&root, &cli.db)?; // always review against a fresh graph
             let graph = Graph::open(&cli.db)?;
             let tools = Tools::new(&graph, &root)?;
             let judged = review::review(&provider, &tools, &file.display().to_string(), max_steps).await?;
+            events::emit(
+                "run_end",
+                serde_json::json!({
+                    "verified": 0, "confirmed": judged.iter().filter(|j| j.verdict.verdict == "confirmed").count(),
+                    "proven": 0, "resolved_earlier": 0, "calls_main": provider.calls(), "calls_worker": 0
+                }),
+            );
             match format {
                 Format::Json => emit(&out, &serde_json::to_string_pretty(&judged)?)?,
                 Format::Markdown => emit(&out, &report::markdown_from_review(&judged))?,
@@ -244,6 +268,9 @@ async fn main() -> Result<()> {
             eprintln!("[sandbox] {}", autoresolve_core::sandbox::describe());
             let graph = Graph::open(&cli.db)?;
             let real = root.canonicalize()?;
+            let started = std::time::Instant::now();
+            events::init(&real.join(".autoresolve").join(events::LOG_FILE), &events::new_run_id())?;
+            events::emit("run_start", events::run_config("fix", &file.display().to_string()));
             let policy = Policy::load(&real)?; // a broken policy.toml stops the run here
             eprintln!("[policy] {}", policy.describe());
             fix::clean_scratch(&real); // start from a clean slate: no stale copies for the models to wander into
@@ -253,6 +280,7 @@ async fn main() -> Result<()> {
             let target = file.display().to_string();
             let judged = review::review(&provider, &tools, &target, max_steps).await?;
             let confirmed: Vec<_> = judged.into_iter().filter(|j| j.verdict.verdict == "confirmed").collect();
+            events::emit("review_done", serde_json::json!({"confirmed": confirmed.len()}));
             println!("\n{} confirmed issue(s) to fix", confirmed.len());
 
             let mut plan = Plan::default();
@@ -263,12 +291,17 @@ async fn main() -> Result<()> {
                 for (n, j) in queue {
                     let i = &j.issue;
                     println!("\n=== [{}] {}:{}  {} ===", i.severity.to_uppercase(), i.file, i.line, i.title);
+                    events::emit(
+                        "issue_start",
+                        serde_json::json!({"n": n, "round": round, "title": i.title, "file": i.file, "line": i.line, "severity": i.severity}),
+                    );
 
                     // an earlier fix may already have resolved this one: check before spending calls on it
                     if verified > 0 {
                         match review::still_present(&provider, &tools, i, max_steps).await {
                             Ok(v) if v.verdict == "refuted" => {
                                 println!("no longer present after the earlier fixes; skipping ({})", v.reason);
+                                events::emit("skipped_resolved", serde_json::json!({"title": i.title}));
                                 already += 1;
                                 continue;
                             }
@@ -289,6 +322,7 @@ async fn main() -> Result<()> {
                     let repro = match fix::reproduce(&strong, &tools, i, &slug, max_steps).await {
                         Ok(t) => {
                             println!("regression test: {} (fails on the current code, as it should)", t.description);
+                            events::emit("repro", serde_json::json!({"ok": true, "description": t.description}));
                             Some(t)
                         }
                         Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
@@ -296,10 +330,12 @@ async fn main() -> Result<()> {
                         // issue as resolved. A passing test here more likely means the test is wrong.
                         Err(e) if e.to_string().contains("looks already fixed") => {
                             println!("the tests written for this bug pass on the current code, so it was not reproduced; the fix will be unproven");
+                            events::emit("repro", serde_json::json!({"ok": false, "error": "test passed on the current code"}));
                             None
                         }
                         Err(e) => {
                             println!("could not reproduce the bug with a test ({e}); the fix will be unproven");
+                            events::emit("repro", serde_json::json!({"ok": false, "error": events::truncate(&e.to_string(), 300)}));
                             None
                         }
                     };
@@ -324,7 +360,15 @@ async fn main() -> Result<()> {
                             print!("{}", o.diff);
                             for c in &o.checks {
                                 println!("  [{}] {} {}", if c.passed { "PASS" } else { "FAIL" }, c.name, c.detail);
+                                events::emit(
+                                    "check",
+                                    serde_json::json!({"name": c.name, "passed": c.passed, "detail": events::truncate(&c.detail, 400)}),
+                                );
                             }
+                            events::emit(
+                                "outcome",
+                                serde_json::json!({"title": i.title, "verified": o.verified, "proven": o.proven, "summary": o.patch.summary}),
+                            );
                             if o.verified {
                                 verified += 1;
                                 if o.proven {
@@ -361,6 +405,10 @@ async fn main() -> Result<()> {
                         Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
                         Err(e) => {
                             println!("  could not produce a fix: {e}");
+                            events::emit(
+                                "outcome",
+                                serde_json::json!({"title": i.title, "verified": false, "proven": false, "error": events::truncate(&e.to_string(), 300)}),
+                            );
                             deferred.push((n, j));
                         }
                     }
@@ -390,11 +438,41 @@ async fn main() -> Result<()> {
                 );
             }
             fix::clean_scratch(&real);
+            events::emit(
+                "run_end",
+                serde_json::json!({
+                    "verified": verified, "proven": proven, "resolved_earlier": already, "confirmed": confirmed.len(),
+                    "calls_main": provider.calls(), "calls_worker": strong.calls(),
+                    "elapsed_ms": started.elapsed().as_millis() as u64
+                }),
+            );
             eprintln!(
                 "[usage] {} model calls (reviewer/skeptic/patch gate) + {} (tester/fixer)",
                 provider.calls(),
                 strong.calls()
             );
+        }
+        Cmd::Events { root, run, list, raw } => {
+            let path = root.join(".autoresolve").join(events::LOG_FILE);
+            let all = events::read_events(&path, None).with_context(|| "no event log yet (run `fix` or `review` first)")?;
+            if list {
+                for (id, n) in events::runs(&all) {
+                    println!("{id}  {n} events");
+                }
+                return Ok(());
+            }
+            let Some(id) = run.or_else(|| events::runs(&all).last().map(|(r, _)| r.clone())) else {
+                println!("no events recorded");
+                return Ok(());
+            };
+            let mine: Vec<_> = all.into_iter().filter(|e| e.run == id).collect();
+            if raw {
+                for e in &mine {
+                    println!("{}", serde_json::to_string(e)?);
+                }
+            } else {
+                print!("{}", events::summarize(&mine));
+            }
         }
         Cmd::ApplyPlan { root, plan } => {
             let real = root.canonicalize()?;

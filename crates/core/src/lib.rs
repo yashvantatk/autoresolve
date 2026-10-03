@@ -8,6 +8,7 @@ pub mod sandbox;
 pub mod policy;
 pub mod report;
 pub mod lint;
+pub mod events;
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Tree};
 
