@@ -1,6 +1,7 @@
 use crate::agent::{run_agent, Tools};
 use crate::detectors;
 use crate::llm::{Provider, ToolSpec};
+use crate::policy::{self, Policy};
 use crate::review::{submit_verdict_spec, Issue, Verdict};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -172,7 +173,9 @@ fn last_line(tail: &str) -> String {
 }
 
 pub fn save_test(root: &Path, rel: &str, content: &str) -> Result<()> {
-    let path = root.join(rel);
+    // no `..`, no absolute paths, and never through a symlink (it could point outside the repo)
+    policy::reject_symlinks(root, rel)?;
+    let path = root.join(policy::normalize(rel)?);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -315,8 +318,15 @@ pub fn create_sandbox(root: &Path, id: &str) -> Result<PathBuf> {
 
 /// Apply a saved plan to the real repo. The whole plan is rehearsed on a scratch copy first,
 /// so a stale plan (the repo changed since) fails without touching anything.
-pub fn apply_plan(root: &Path, plan: &Plan) -> Result<()> {
+pub fn apply_plan(root: &Path, plan: &Plan, policy: &Policy) -> Result<()> {
     let root = root.canonicalize().context("bad repo root")?;
+    // the plan file is just a file on disk: re-check every item against the policy before anything else
+    policy.check_plan(plan)?;
+    for p in &plan.items {
+        for e in &p.edits {
+            policy::reject_symlinks(&root, &e.file)?;
+        }
+    }
     let scratch = create_sandbox(&root, "apply-check")?;
     for (i, p) in plan.items.iter().enumerate() {
         apply_edits(&scratch, &p.edits).with_context(|| {
@@ -465,13 +475,18 @@ async fn repair_test(
 }
 
 /// Ask the fixer for a patch, apply it in a sandbox, verify it. One retry with feedback.
+/// `provider` writes the patch (a cheap model is fine: the checks catch its mistakes).
+/// `gate` judges the finished patch (its mistakes are silent, so give it the strongest model).
+#[allow(clippy::too_many_arguments)]
 pub async fn fix_issue(
     provider: &dyn Provider,
+    gate: &dyn Provider,
     tools: &Tools<'_>,
     issue: &Issue,
     siblings: &[Issue],
     test_cmd: Option<&str>,
     repro: Option<(&str, &ReproTest)>,
+    policy: &Policy,
     id: &str,
     max_steps: usize,
 ) -> Result<Outcome> {
@@ -525,6 +540,13 @@ pub async fn fix_issue(
         let out = run_agent(provider, tools, FIXER_SYSTEM, &task, specs, "submit_patch", max_steps).await?;
         let patch: Patch = serde_json::from_value(out).context("model returned a malformed patch")?;
 
+        // policy first: a patch that touches protected paths or is too large never reaches the sandbox
+        if let Err(e) = policy.check_edits(&patch.edits) {
+            eprintln!("[fix] attempt {attempt}: {e}");
+            feedback = e.to_string();
+            continue;
+        }
+
         let sandbox = create_sandbox(root, &format!("{id}-{attempt}"))?;
         let baseline = test_cmd.map(|c| run_tests(&sandbox, c));
         let touched = match apply_edits(&sandbox, &patch.edits) {
@@ -568,19 +590,21 @@ pub async fn fix_issue(
         // Gate: even if every check passed, is the patch limited to what the bug requires?
         if checks.iter().all(|c| c.passed) {
             let prod_diff = diff_for(root, &sandbox, &touched);
-            let gate = match review_patch(provider, tools, issue, &prod_diff, &others, max_steps).await {
+            let verdict = match review_patch(gate, tools, issue, &prod_diff, &others, max_steps).await {
                 Ok(v) => Check {
                     name: "patch review (no unrelated changes)".into(),
                     passed: v.verdict == "confirmed",
                     detail: v.reason,
                 },
+                // out of daily quota is not a verdict: stop the run instead of rejecting every patch
+                Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
                 Err(e) => Check {
                     name: "patch review (no unrelated changes)".into(),
                     passed: false,
                     detail: format!("reviewer failed: {e}"),
                 },
             };
-            checks.push(gate);
+            checks.push(verdict);
         }
 
         let verified = !checks.is_empty() && checks.iter().all(|c| c.passed);
@@ -706,13 +730,59 @@ mod tests {
                 },
             ],
         };
-        apply_plan(&d, &plan).unwrap();
+        apply_plan(&d, &plan, &Policy::default()).unwrap();
         assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "x = 3\n");
         assert!(d.join("autoresolve_regression/test_b.py").exists());
 
         // a stale plan (the file changed since) must not touch anything
         std::fs::write(d.join("a.py"), "y = 0\n").unwrap();
-        assert!(apply_plan(&d, &plan).is_err());
+        assert!(apply_plan(&d, &plan, &Policy::default()).is_err());
         assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "y = 0\n");
+    }
+
+    fn plan_of(edits: Vec<Edit>, test: Option<(String, String)>) -> Plan {
+        Plan {
+            items: vec![PlanItem { title: "t".into(), summary: String::new(), proven: false, edits, test }],
+        }
+    }
+
+    #[test]
+    fn apply_plan_refuses_a_tampered_plan_and_writes_nothing() {
+        let d = tmp("tamper");
+        std::fs::write(d.join("a.py"), "x = 1\n").unwrap();
+        std::fs::create_dir_all(d.join(".git")).unwrap();
+        std::fs::write(d.join(".git/config"), "keep\n").unwrap();
+        let pol = Policy::default();
+
+        // edit aimed at .git
+        let git = plan_of(vec![edit(".git/config", "keep", "pwned")], None);
+        assert!(apply_plan(&d, &git, &pol).is_err());
+        assert_eq!(std::fs::read_to_string(d.join(".git/config")).unwrap(), "keep\n");
+
+        // test path that escapes the repo
+        let esc = plan_of(vec![edit("a.py", "x = 1", "x = 2")], Some(("../escaped.py".into(), "x\n".into())));
+        assert!(apply_plan(&d, &esc, &pol).is_err());
+        assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "x = 1\n"); // nothing was written
+        assert!(!d.parent().unwrap().join("escaped.py").exists());
+    }
+
+    #[test]
+    fn symlinks_cannot_redirect_writes() {
+        let d = tmp("links");
+        let outside = tmp("links-outside");
+        // a regression directory that is really a link to somewhere else
+        std::os::unix::fs::symlink(&outside, d.join("autoresolve_regression")).unwrap();
+        assert!(save_test(&d, "autoresolve_regression/test_0_x.py", "pass\n").is_err());
+        assert!(!outside.join("test_0_x.py").exists());
+
+        // an edit target that is a symlink
+        std::fs::write(d.join("real.py"), "x = 1\n").unwrap();
+        std::os::unix::fs::symlink(d.join("real.py"), d.join("link.py")).unwrap();
+        let plan = plan_of(vec![edit("link.py", "x = 1", "x = 2")], None);
+        assert!(apply_plan(&d, &plan, &Policy::default()).is_err());
+        assert_eq!(std::fs::read_to_string(d.join("real.py")).unwrap(), "x = 1\n");
+
+        // ordinary saves still work
+        assert!(save_test(&d, "plain/test_0_y.py", "pass\n").is_ok());
     }
 }

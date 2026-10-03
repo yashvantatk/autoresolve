@@ -5,6 +5,7 @@ pub mod detectors;
 pub mod review;
 pub mod fix;
 pub mod sandbox;
+pub mod policy;
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Tree};
 

@@ -3,6 +3,7 @@ use autoresolve_core::agent::Tools;
 use autoresolve_core::fix::{self, Plan, PlanItem};
 use autoresolve_core::graph::{self, FileGraph, Graph};
 use autoresolve_core::llm::{self, Provider};
+use autoresolve_core::policy::Policy;
 use autoresolve_core::review;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
@@ -194,6 +195,8 @@ async fn main() -> Result<()> {
             eprintln!("[sandbox] {}", autoresolve_core::sandbox::describe());
             let graph = Graph::open(&cli.db)?;
             let real = root.canonicalize()?;
+            let policy = Policy::load(&real)?; // a broken policy.toml stops the run here
+            eprintln!("[policy] {}", policy.describe());
             // Verified fixes accumulate in a staging copy, so later fixes are tested on top of earlier ones.
             let work = fix::create_sandbox(&real, "work")?;
             let tools = Tools::new(&graph, &work)?;
@@ -250,13 +253,16 @@ async fn main() -> Result<()> {
                         }
                     };
 
+                    // `strong` (the cheap worker) writes the patch; `provider` (the strong model) judges it
                     let attempt = fix::fix_issue(
                         &strong,
+                        &provider,
                         &tools,
                         i,
                         &siblings,
                         test_cmd.as_deref(),
                         repro.as_ref().map(|t| (slug.as_str(), t)),
+                        &policy,
                         &format!("fix{n}r{round}"),
                         max_steps,
                     )
@@ -333,7 +339,7 @@ async fn main() -> Result<()> {
                 );
             }
             eprintln!(
-                "[usage] {} model calls (reviewer/skeptic) + {} (tester/fixer/gate)",
+                "[usage] {} model calls (reviewer/skeptic/patch gate) + {} (tester/fixer)",
                 provider.calls(),
                 strong.calls()
             );
@@ -344,7 +350,10 @@ async fn main() -> Result<()> {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {} (run `fix` first)", path.display()))?;
             let plan: Plan = serde_json::from_str(&text).context("plan file is malformed")?;
-            fix::apply_plan(&real, &plan)?;
+            let policy = Policy::load(&real)?;
+            eprintln!("[policy] {}", policy.describe());
+            eprintln!("[sandbox] {}", autoresolve_core::sandbox::describe());
+            fix::apply_plan(&real, &plan, &policy)?;
             println!("applied {} fix(es) from {}", plan.items.len(), path.display());
             for p in &plan.items {
                 println!("  - [{}] {}", if p.proven { "proven" } else { "static checks only" }, p.summary);
