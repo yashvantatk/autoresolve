@@ -72,6 +72,15 @@ enum Cmd {
         #[arg(long)]
         plan: Option<PathBuf>,
     },
+        /// Run a command in the sandbox (Docker: no network, read-only mount unless --writable)
+    Sandbox {
+        cmd: String,
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// Mount the directory writable (default is read-only)
+        #[arg(long)]
+        writable: bool,
+    },
 }
 
 fn python_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -182,6 +191,7 @@ async fn main() -> Result<()> {
             let provider = llm::provider_from_env(false)?; // reviewer and skeptic
             let strong = llm::provider_from_env(true)?; // tester, fixer and patch gate
             index_repo(&root, &cli.db)?;
+            eprintln!("[sandbox] {}", autoresolve_core::sandbox::describe());
             let graph = Graph::open(&cli.db)?;
             let real = root.canonicalize()?;
             // Verified fixes accumulate in a staging copy, so later fixes are tested on top of earlier ones.
@@ -343,7 +353,7 @@ async fn main() -> Result<()> {
             let mut failed = 0;
             for p in &plan.items {
                 if let Some((rel, _)) = &p.test {
-                    let (ok, tail) = fix::run_tests(&real, &format!("python3 {rel}"));
+                    let (ok, tail) = autoresolve_core::sandbox::run(&real, &format!("python3 {rel}"), true);
                     println!("  [{}] {rel}", if ok { "PASS" } else { "FAIL" });
                     if !ok {
                         failed += 1;
@@ -355,6 +365,16 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
             println!("review the result with: git --no-pager diff");
+        }
+        Cmd::Sandbox { cmd, dir, writable } => {
+            let dir = dir.canonicalize()?;
+            eprintln!("[sandbox] {}", autoresolve_core::sandbox::describe());
+            let (ok, out) = autoresolve_core::sandbox::run(&dir, &cmd, !writable);
+            print!("{out}");
+            println!("\nexit: {}", if ok { "success" } else { "failure" });
+            if !ok {
+                std::process::exit(1);
+            }
         }
     }
     Ok(())

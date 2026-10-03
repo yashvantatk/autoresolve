@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const FIXER_SYSTEM: &str = "You are a careful engineer fixing ONE confirmed bug. Read the \
 relevant code with the tools, then make the smallest correct change. Submit it with \
@@ -360,15 +359,8 @@ pub fn verify(sandbox: &Path, original_root: &Path, touched: &[String]) -> Vec<C
 }
 
 pub fn run_tests(dir: &Path, cmd: &str) -> (bool, String) {
-    match Command::new("timeout").args(["120", "sh", "-c", cmd]).current_dir(dir).output() {
-        Ok(o) => {
-            let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
-            text.push_str(&String::from_utf8_lossy(&o.stderr));
-            let tail: String = text.chars().rev().take(1500).collect::<Vec<_>>().into_iter().rev().collect();
-            (o.status.success(), tail)
-        }
-        Err(e) => (false, format!("could not run: {e}")),
-    }
+    // sandbox copies are disposable, so the working directory is mounted writable
+    crate::sandbox::run(dir, cmd, false)
 }
 
 /// A failing test only counts as a reproduction if it fails by assertion, or the error

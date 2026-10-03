@@ -4,6 +4,7 @@ pub mod graph;
 pub mod detectors;
 pub mod review;
 pub mod fix;
+pub mod sandbox;
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Tree};
 
