@@ -197,6 +197,7 @@ async fn main() -> Result<()> {
             let real = root.canonicalize()?;
             let policy = Policy::load(&real)?; // a broken policy.toml stops the run here
             eprintln!("[policy] {}", policy.describe());
+            fix::clean_scratch(&real); // start from a clean slate: no stale copies for the models to wander into
             // Verified fixes accumulate in a staging copy, so later fixes are tested on top of earlier ones.
             let work = fix::create_sandbox(&real, "work")?;
             let tools = Tools::new(&graph, &work)?;
@@ -338,6 +339,7 @@ async fn main() -> Result<()> {
                     plan.items.len()
                 );
             }
+            fix::clean_scratch(&real);
             eprintln!(
                 "[usage] {} model calls (reviewer/skeptic/patch gate) + {} (tester/fixer)",
                 provider.calls(),

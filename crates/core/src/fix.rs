@@ -285,9 +285,36 @@ pub fn apply_edits(base: &Path, edits: &[Edit]) -> Result<Vec<String>> {
     Ok(touched)
 }
 
-/// Copy the repo (respecting .gitignore) into .autoresolve/sandbox/<id>.
+/// Where scratch copies live. Always under the REAL repo's `.autoresolve/sandbox`, even when
+/// `root` is itself a scratch copy (the staging copy), so copies never nest inside each other.
+fn scratch_base(root: &Path) -> PathBuf {
+    for a in root.ancestors() {
+        if a.file_name().is_some_and(|n| n == ".autoresolve") {
+            return a.join("sandbox");
+        }
+    }
+    root.join(".autoresolve").join("sandbox")
+}
+
+/// Delete every scratch copy of the repo at `root` (never plan.json or the graph database).
+/// Refuses to follow a symlink, so a planted `.autoresolve/sandbox` link cannot aim the delete elsewhere.
+pub fn clean_scratch(root: &Path) {
+    let base = root.join(".autoresolve").join("sandbox");
+    match std::fs::symlink_metadata(&base) {
+        Ok(m) if m.file_type().is_dir() => {
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        Ok(m) if m.file_type().is_symlink() => {
+            let _ = std::fs::remove_file(&base);
+        }
+        _ => {}
+    }
+}
+
+/// Copy the repo (respecting .gitignore, skipping hidden files such as `.env` and `.git`)
+/// into .autoresolve/sandbox/<id>.
 pub fn create_sandbox(root: &Path, id: &str) -> Result<PathBuf> {
-    let dir = root.join(".autoresolve").join("sandbox").join(id);
+    let dir = scratch_base(root).join(id);
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
@@ -337,6 +364,7 @@ pub fn apply_plan(root: &Path, plan: &Plan, policy: &Policy) -> Result<()> {
             )
         })?;
     }
+    let _ = std::fs::remove_dir_all(&scratch);
     for p in &plan.items {
         apply_edits(&root, &p.edits)?;
         if let Some((rel, content)) = &p.test {
@@ -784,5 +812,36 @@ mod tests {
 
         // ordinary saves still work
         assert!(save_test(&d, "plain/test_0_y.py", "pass\n").is_ok());
+    }
+
+    #[test]
+    fn scratch_copies_never_nest_and_cleanup_is_contained() {
+        let d = tmp("nest");
+        std::fs::write(d.join("a.py"), "x = 1\n").unwrap();
+        std::fs::create_dir_all(d.join(".autoresolve")).unwrap();
+        std::fs::write(d.join(".autoresolve/plan.json"), "{}").unwrap();
+        let root = d.canonicalize().unwrap();
+        let work = create_sandbox(&root, "work").unwrap();
+        let inner = create_sandbox(&work, "inner").unwrap();
+        // the copy made from the staging copy sits beside it, not inside it
+        assert_eq!(inner, root.join(".autoresolve/sandbox/inner"));
+        assert!(!work.join(".autoresolve").exists());
+        assert!(inner.join("a.py").exists());
+        // cleanup removes scratch copies but keeps plan.json
+        clean_scratch(&root);
+        assert!(!root.join(".autoresolve/sandbox").exists());
+        assert!(root.join(".autoresolve/plan.json").exists());
+        assert!(root.join("a.py").exists());
+    }
+
+    #[test]
+    fn cleanup_does_not_follow_a_symlinked_sandbox_dir() {
+        let d = tmp("cleanlink");
+        let victim = tmp("cleanlink-victim");
+        std::fs::write(victim.join("precious.txt"), "keep").unwrap();
+        std::fs::create_dir_all(d.join(".autoresolve")).unwrap();
+        std::os::unix::fs::symlink(&victim, d.join(".autoresolve/sandbox")).unwrap();
+        clean_scratch(&d);
+        assert!(victim.join("precious.txt").exists());
     }
 }
