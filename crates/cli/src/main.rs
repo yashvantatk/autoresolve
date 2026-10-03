@@ -122,6 +122,9 @@ enum Cmd {
         /// Plan file (default: <root>/.autoresolve/plan.json)
         #[arg(long)]
         plan: Option<PathBuf>,
+        /// Also apply fixes that no regression test proves (read their diffs first)
+        #[arg(long)]
+        include_unproven: bool,
     },
         /// Run a command in the sandbox (Docker: no network, read-only mount unless --writable)
     Sandbox {
@@ -298,7 +301,8 @@ async fn main() -> Result<()> {
                     );
 
                     // an earlier fix may already have resolved this one: check before spending calls on it
-                    if verified > 0 {
+                    // (only proven fixes are stacked, so only they can have changed the code)
+                    if proven > 0 {
                         match review::still_present(&provider, &tools, i, max_steps).await {
                             Ok(v) if v.verdict == "refuted" => {
                                 println!("no longer present after the earlier fixes; skipping ({})", v.reason);
@@ -372,12 +376,6 @@ async fn main() -> Result<()> {
                             );
                             if o.verified {
                                 verified += 1;
-                                if o.proven {
-                                    proven += 1;
-                                    println!("  -> PROVEN: the regression test fails before the patch and passes after");
-                                } else {
-                                    println!("  -> verified by static checks only (no regression test)");
-                                }
                                 plan.items.push(PlanItem {
                                     title: i.title.clone(),
                                     summary: o.patch.summary.clone(),
@@ -385,18 +383,28 @@ async fn main() -> Result<()> {
                                     edits: o.patch.edits.clone(),
                                     test: o.test.clone(),
                                 });
-                                // stack it: later issues are checked on top of this fix
-                                fix::apply_edits(&work, &o.patch.edits)?;
-                                if let Some((rel, content)) = &o.test {
-                                    fix::save_test(&work, rel, content)?;
-                                }
-                                if apply {
-                                    fix::apply_edits(&real, &o.patch.edits)?;
+                                if o.proven {
+                                    proven += 1;
+                                    println!("  -> PROVEN: the regression test fails before the patch and passes after");
+                                    // stack it: later issues are checked on top of this fix
+                                    fix::apply_edits(&work, &o.patch.edits)?;
                                     if let Some((rel, content)) = &o.test {
-                                        fix::save_test(&real, rel, content)?;
-                                        println!("  -> saved {rel}");
+                                        fix::save_test(&work, rel, content)?;
                                     }
-                                    println!("  -> applied to repo");
+                                    if apply {
+                                        fix::apply_edits(&real, &o.patch.edits)?;
+                                        if let Some((rel, content)) = &o.test {
+                                            fix::save_test(&real, rel, content)?;
+                                            println!("  -> saved {rel}");
+                                        }
+                                        println!("  -> applied to repo");
+                                    }
+                                } else {
+                                    // The static checks and the gate are model-assisted and can be wrong: no fix that a
+                                    // failing-then-passing test does not back is trusted, stacked or applied by default.
+                                    println!("  -> UNPROVEN SUGGESTION: it passed the static checks and the patch review, but no regression test");
+                                    println!("     fails before it and passes after it. It is saved in the plan, not stacked on later fixes, and");
+                                    println!("     `apply-plan` skips it unless you pass --include-unproven. Read the diff yourself first.");
                                 }
                             } else {
                                 println!("  -> NOT verified; not applied");
@@ -423,8 +431,9 @@ async fn main() -> Result<()> {
                 queue = deferred;
             }
             println!(
-                "\n{verified}/{} fixes verified, {proven} proven by a regression test, {already} resolved by earlier fixes",
-                confirmed.len()
+                "\n{verified}/{} fixes verified, {proven} proven by a regression test ({} unproven suggestion(s)), {already} resolved by earlier fixes",
+                confirmed.len(),
+                verified - proven
             );
             if !plan.items.is_empty() {
                 let path = real.join(".autoresolve").join("plan.json");
@@ -433,9 +442,9 @@ async fn main() -> Result<()> {
                 }
                 std::fs::write(&path, serde_json::to_string_pretty(&plan)?)?;
                 println!(
-                    "plan saved to {} ({} fix(es)). Review it, then apply exactly this with:\n  cargo run -p autoresolve-cli -- apply-plan",
+                    "plan saved to {} ({proven} proven fix(es), {} unproven suggestion(s)). Review it, then apply the proven ones with:\n  cargo run -p autoresolve-cli -- apply-plan",
                     path.display(),
-                    plan.items.len()
+                    plan.items.len() - proven
                 );
             }
             fix::clean_scratch(&real);
@@ -481,7 +490,7 @@ async fn main() -> Result<()> {
                 let _ = write!(stdout, "{}", events::summarize(&mine));
             }
         }
-        Cmd::ApplyPlan { root, plan } => {
+        Cmd::ApplyPlan { root, plan, include_unproven } => {
             let real = root.canonicalize()?;
             let path = plan.unwrap_or_else(|| real.join(".autoresolve").join("plan.json"));
             let text = std::fs::read_to_string(&path)
@@ -490,14 +499,22 @@ async fn main() -> Result<()> {
             let policy = Policy::load(&real)?;
             eprintln!("[policy] {}", policy.describe());
             eprintln!("[sandbox] {}", autoresolve_core::sandbox::describe());
-            fix::apply_plan(&real, &plan, &policy)?;
-            println!("applied {} fix(es) from {}", plan.items.len(), path.display());
-            for p in &plan.items {
-                println!("  - [{}] {}", if p.proven { "proven" } else { "static checks only" }, p.summary);
+            let skipped = fix::apply_plan(&real, &plan, &policy, include_unproven)?;
+            let applied: Vec<&PlanItem> = plan.items.iter().filter(|p| p.proven || include_unproven).collect();
+            println!("applied {} fix(es) from {}", applied.len(), path.display());
+            for p in &applied {
+                println!("  - [{}] {}", if p.proven { "proven" } else { "UNPROVEN, applied by request" }, p.summary);
+            }
+            if skipped > 0 {
+                println!("{skipped} unproven suggestion(s) were NOT applied (no regression test backs them). To review them:");
+                for p in plan.items.iter().filter(|p| !p.proven) {
+                    println!("  - {}", p.summary);
+                }
+                println!("  apply them anyway, after reading the diffs, with: apply-plan --include-unproven");
             }
             // run the saved regression tests against the real repo
             let mut failed = 0;
-            for p in &plan.items {
+            for p in &applied {
                 if let Some((rel, _)) = &p.test {
                     let (ok, tail) = autoresolve_core::sandbox::run(&real, &format!("python3 {rel}"), true);
                     println!("  [{}] {rel}", if ok { "PASS" } else { "FAIL" });

@@ -2,7 +2,7 @@ use crate::agent::{run_agent, Tools};
 use crate::detectors;
 use crate::llm::{Provider, ToolSpec};
 use crate::policy::{self, Policy};
-use crate::review::{submit_verdict_spec, Issue, Verdict};
+use crate::review::{Issue, Verdict};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -121,7 +121,12 @@ A test that fails in any other way is rejected. Test observable behavior only: c
 a caller would and assert on what it returns or does. Never inspect the implementation (no \
 `__defaults__`, `__code__`, `inspect`, `ast`, or reading source files); such tests are rejected. For a \
 mutable-default-argument bug, call the function twice without the argument and assert that the second \
-result carries no data from the first call.";
+result carries no data from the first call. Always import and call the REAL code from the repo; never \
+copy the code under test into the test. If the claim is about an unwanted side effect (a file created, \
+a command run), a correct fix may raise instead of returning: call the code inside `try/except Exception: \
+pass` and assert ONLY on the side effect afterwards (this is the one allowed use of try/except). Create \
+any side-effect file inside a `tempfile.TemporaryDirectory()` and use absolute paths, because the repo \
+directory may be read-only.";
 
 fn submit_test_spec() -> ToolSpec {
     ToolSpec {
@@ -380,17 +385,21 @@ pub fn create_sandbox(root: &Path, id: &str) -> Result<PathBuf> {
 
 /// Apply a saved plan to the real repo. The whole plan is rehearsed on a scratch copy first,
 /// so a stale plan (the repo changed since) fails without touching anything.
-pub fn apply_plan(root: &Path, plan: &Plan, policy: &Policy) -> Result<()> {
+/// Applies the plan's items in order, all or nothing. Items that were not proven by a regression
+/// test are skipped unless `include_unproven`; returns how many were skipped.
+pub fn apply_plan(root: &Path, plan: &Plan, policy: &Policy, include_unproven: bool) -> Result<usize> {
     let root = root.canonicalize().context("bad repo root")?;
     // the plan file is just a file on disk: re-check every item against the policy before anything else
     policy.check_plan(plan)?;
-    for p in &plan.items {
+    let chosen: Vec<&PlanItem> = plan.items.iter().filter(|p| p.proven || include_unproven).collect();
+    let skipped = plan.items.len() - chosen.len();
+    for p in &chosen {
         for e in &p.edits {
             policy::reject_symlinks(&root, &e.file)?;
         }
     }
     let scratch = create_sandbox(&root, "apply-check")?;
-    for (i, p) in plan.items.iter().enumerate() {
+    for (i, p) in chosen.iter().enumerate() {
         apply_edits(&scratch, &p.edits).with_context(|| {
             format!(
                 "plan item {} ({}) no longer applies; the repo changed since the plan was made. Nothing was written.",
@@ -400,13 +409,13 @@ pub fn apply_plan(root: &Path, plan: &Plan, policy: &Policy) -> Result<()> {
         })?;
     }
     let _ = std::fs::remove_dir_all(&scratch);
-    for p in &plan.items {
+    for p in &chosen {
         apply_edits(&root, &p.edits)?;
         if let Some((rel, content)) = &p.test {
             save_test(&root, rel, content)?;
         }
     }
-    Ok(())
+    Ok(skipped)
 }
 
 /// Static checks on every touched Python file.
@@ -478,7 +487,49 @@ return types, signatures or defaults of unrelated code, or editing code to suit 
 Use the tools to check how the changed code is really used (get_callers, and the real classes it \
 talks to). Production code must never be bent to fit a test. If the task lists other confirmed bugs, a \
 change that fixes one of them is acceptable only when it is minimal and needed to exercise the \
-claimed bug. Finish by calling submit_verdict.";
+claimed bug. Answer two questions when you call submit_verdict. `still_has_defect`: does the PATCHED \
+code still contain the problem the claim describes (a vulnerability that is still exploitable, a crash that \
+can still happen, state that is still shared)? Replacing one unsafe call with another equally unsafe call, \
+for example os.popen(cmd) with subprocess.run(cmd, shell=True), leaves the defect in place: answer true. \
+`unrelated_changes`: does the diff change anything the claim does not require? Never approve because a \
+patch is small or because it acknowledges the issue; judge only whether the defect is gone and nothing else \
+changed. If your own reasoning says the defect remains, still_has_defect must be true.";
+
+/// What the patch gate must answer. The accept/reject decision is made in code from these two
+/// booleans, so a verdict can never contradict the reasoning written next to it.
+fn submit_gate_spec() -> ToolSpec {
+    ToolSpec {
+        name: "submit_verdict",
+        description: "Submit your judgement of the patch. Call exactly once when done.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "still_has_defect": {"type": "boolean", "description": "true if the patched code still contains the problem the claim describes"},
+                "unrelated_changes": {"type": "boolean", "description": "true if the diff changes anything the claim does not require"},
+                "reason": {"type": "string", "description": "one or two sentences justifying both answers"}
+            },
+            "required": ["still_has_defect", "unrelated_changes", "reason"]
+        }),
+    }
+}
+
+#[derive(Deserialize)]
+struct GateAnswer {
+    still_has_defect: bool,
+    unrelated_changes: bool,
+    reason: String,
+}
+
+/// Accept only if the defect is gone AND nothing unrelated changed.
+fn gate_decision(a: GateAnswer) -> Verdict {
+    let (verdict, tag) = match (a.still_has_defect, a.unrelated_changes) {
+        (false, false) => ("confirmed", ""),
+        (true, false) => ("refuted", "[the defect is still present] "),
+        (false, true) => ("refuted", "[unrelated changes] "),
+        (true, true) => ("refuted", "[the defect is still present, and unrelated changes] "),
+    };
+    Verdict { verdict: verdict.into(), reason: format!("{tag}{}", a.reason) }
+}
 
 pub async fn review_patch(
     provider: &dyn Provider,
@@ -489,7 +540,7 @@ pub async fn review_patch(
     max_steps: usize,
 ) -> Result<Verdict> {
     let mut specs = Tools::specs();
-    specs.push(submit_verdict_spec());
+    specs.push(submit_gate_spec());
     let mut task = format!(
         "Bug claim:\n{}:{} {}\n{}\n\nProposed patch (unified diff):\n{}",
         issue.file, issue.line, issue.title, issue.explanation, diff
@@ -500,7 +551,8 @@ pub async fn review_patch(
         ));
     }
     let out = crate::events::scope("gate", run_agent(provider, tools, PATCH_REVIEWER_SYSTEM, &task, specs, "submit_verdict", max_steps)).await?;
-    serde_json::from_value(out).context("model returned a malformed verdict")
+    let answer: GateAnswer = serde_json::from_value(out).context("model returned a malformed verdict")?;
+    Ok(gate_decision(answer))
 }
 
 /// The regression test errored on the patched code: ask the tester to repair the TEST
@@ -800,13 +852,13 @@ mod tests {
                 },
             ],
         };
-        apply_plan(&d, &plan, &Policy::default()).unwrap();
+        apply_plan(&d, &plan, &Policy::default(), true).unwrap();
         assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "x = 3\n");
         assert!(d.join("autoresolve_regression/test_b.py").exists());
 
         // a stale plan (the file changed since) must not touch anything
         std::fs::write(d.join("a.py"), "y = 0\n").unwrap();
-        assert!(apply_plan(&d, &plan, &Policy::default()).is_err());
+        assert!(apply_plan(&d, &plan, &Policy::default(), true).is_err());
         assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "y = 0\n");
     }
 
@@ -826,12 +878,12 @@ mod tests {
 
         // edit aimed at .git
         let git = plan_of(vec![edit(".git/config", "keep", "pwned")], None);
-        assert!(apply_plan(&d, &git, &pol).is_err());
+        assert!(apply_plan(&d, &git, &pol, true).is_err());
         assert_eq!(std::fs::read_to_string(d.join(".git/config")).unwrap(), "keep\n");
 
         // test path that escapes the repo
         let esc = plan_of(vec![edit("a.py", "x = 1", "x = 2")], Some(("../escaped.py".into(), "x\n".into())));
-        assert!(apply_plan(&d, &esc, &pol).is_err());
+        assert!(apply_plan(&d, &esc, &pol, true).is_err());
         assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "x = 1\n"); // nothing was written
         assert!(!d.parent().unwrap().join("escaped.py").exists());
     }
@@ -849,7 +901,7 @@ mod tests {
         std::fs::write(d.join("real.py"), "x = 1\n").unwrap();
         std::os::unix::fs::symlink(d.join("real.py"), d.join("link.py")).unwrap();
         let plan = plan_of(vec![edit("link.py", "x = 1", "x = 2")], None);
-        assert!(apply_plan(&d, &plan, &Policy::default()).is_err());
+        assert!(apply_plan(&d, &plan, &Policy::default(), true).is_err());
         assert_eq!(std::fs::read_to_string(d.join("real.py")).unwrap(), "x = 1\n");
 
         // ordinary saves still work
@@ -894,5 +946,37 @@ mod tests {
         assert!(inspects_implementation("src = open('buggy.py').read()").is_some());
         let behavioral = "from m import add_tag\nfirst = add_tag('a')\nsecond = add_tag('b')\nassert second == ['b']";
         assert!(inspects_implementation(behavioral).is_none());
+    }
+
+    #[test]
+    fn unproven_items_are_skipped_unless_asked_for() {
+        let d = tmp("unproven");
+        std::fs::write(d.join("a.py"), "x = 1\ny = 1\n").unwrap();
+        let item = |search: &str, replace: &str, proven: bool| PlanItem {
+            title: "t".into(),
+            summary: String::new(),
+            proven,
+            edits: vec![edit("a.py", search, replace)],
+            test: None,
+        };
+        let plan = Plan { items: vec![item("x = 1", "x = 2", true), item("y = 1", "y = 2", false)] };
+        let pol = Policy::default();
+        assert_eq!(apply_plan(&d, &plan, &pol, false).unwrap(), 1); // one skipped
+        assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "x = 2\ny = 1\n");
+        // a second repo: opting in applies both
+        let d2 = tmp("unproven2");
+        std::fs::write(d2.join("a.py"), "x = 1\ny = 1\n").unwrap();
+        assert_eq!(apply_plan(&d2, &plan, &pol, true).unwrap(), 0);
+        assert_eq!(std::fs::read_to_string(d2.join("a.py")).unwrap(), "x = 2\ny = 2\n");
+    }
+
+    #[test]
+    fn the_gate_cannot_approve_a_patch_that_leaves_the_defect_in_place() {
+        let v = |still, unrelated| gate_decision(GateAnswer { still_has_defect: still, unrelated_changes: unrelated, reason: "r".into() });
+        assert_eq!(v(false, false).verdict, "confirmed");
+        for (still, unrelated) in [(true, false), (false, true), (true, true)] {
+            assert_eq!(v(still, unrelated).verdict, "refuted");
+        }
+        assert!(v(true, false).reason.contains("still present"));
     }
 }
