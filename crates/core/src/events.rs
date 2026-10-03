@@ -172,13 +172,14 @@ pub fn summarize(events: &[Event]) -> String {
         wall
     ));
     if start.is_some() {
+        let uses_ollama = s(start, "provider") == "ollama" || s(start, "provider_strong") == "ollama";
         out.push_str(&format!(
-            "config: provider={} worker={} model={} worker_model={} ollama={}\n",
+            "config: provider={} worker={} model={} worker_model={}{}\n",
             s(start, "provider"),
             s(start, "provider_strong"),
             s(start, "model"),
             s(start, "model_strong"),
-            s(start, "ollama_model")
+            if uses_ollama { format!(" ollama={}", s(start, "ollama_model")) } else { String::new() }
         ));
     }
     // per-role stats, in order of first appearance
@@ -234,6 +235,14 @@ pub fn summarize(events: &[Event]) -> String {
         count("terminal_forced"),
         count("model_error")
     ));
+    let waits: Vec<u64> = events.iter().filter(|e| e.kind == "retry").map(|e| e.data["wait_s"].as_u64().unwrap_or(0)).collect();
+    if !waits.is_empty() {
+        out.push_str(&format!(
+            "rate-limit and network waits: {} retries, {} total\n",
+            waits.len(),
+            fmt_ms(waits.iter().sum::<u64>() * 1000)
+        ));
+    }
     if let Some(e) = end {
         let d = &e.data;
         out.push_str(&format!(
@@ -302,6 +311,8 @@ mod tests {
             turn("fixer", 90_000, vec!["submit_patch"]),
             ev("r", "controller", "check", json!({"name": "x", "passed": false})),
             ev("r", "fixer", "terminal_forced", json!({})),
+            ev("r", "reviewer", "retry", json!({"wait_s": 47, "reason": 429})),
+            ev("r", "fixer", "retry", json!({"wait_s": 60, "reason": 429})),
             ev("r", "controller", "run_end", json!({"verified": 1, "confirmed": 2, "proven": 1, "resolved_earlier": 0, "calls_main": 3, "calls_worker": 1})),
         ];
         let text = summarize(&events);
@@ -313,6 +324,8 @@ mod tests {
         assert!(text.contains("checks failed: 1"));
         assert!(text.contains("forced structured outputs: 1"));
         assert!(text.contains("1/2 verified, 1 proven"));
+        assert!(text.contains("2 retries, 1m47s total"));
+        assert!(!text.contains("ollama=")); // not used in this run
     }
 
     #[test]

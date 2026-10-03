@@ -1,6 +1,10 @@
 //! Lint, security and type checks for patched files, run INSIDE the sandbox.
 //! The rule: a patch may not add findings. For each touched file we count findings from
-//! ruff (lint), bandit (security) and mypy (types) before and after, and require after <= before.
+//! ruff (errors only: syntax errors and pyflakes, so style rules and ruff version upgrades never
+//! fail a patch), bandit (security, medium severity and above) and mypy (types) before and after,
+//! and require after <= before. Low-severity bandit notes are ignored on purpose: a correct security
+//! fix often swaps one risky call for a safer one that adds a harmless low-severity note
+//! (os.popen -> subprocess.run adds B404/B603), and that must not count against the patch.
 //!
 //! The default `python:3.12-slim` image has none of these tools, so the check turns itself off
 //! (with one note) unless the sandbox image has them. Build one:
@@ -30,8 +34,8 @@ pub fn shell_quote(s: &str) -> String {
 pub fn count_command(file: &str) -> String {
     let f = shell_quote(file);
     format!(
-        "echo \"ruff=$(ruff check --quiet --no-cache --output-format concise {f} 2>/dev/null | grep -c ': [A-Z]*[0-9]')\"; \
-         echo \"bandit=$(bandit -q -f custom --msg-template '{{relpath}}:{{line}}: {{test_id}}' {f} 2>/dev/null | grep -c ': B[0-9]')\"; \
+        "echo \"ruff=$(ruff check --quiet --no-cache --select E9,F --output-format concise {f} 2>/dev/null | grep -c ': [A-Z]*[0-9]')\"; \
+         echo \"bandit=$(bandit -q -ll -f custom --msg-template '{{relpath}}:{{line}}: {{test_id}}' {f} 2>/dev/null | grep -c ': B[0-9]')\"; \
          echo \"mypy=$(mypy --ignore-missing-imports --follow-imports=skip --no-error-summary --no-color-output --cache-dir=/dev/null {f} 2>/dev/null | grep -c ': error:')\""
     )
 }
@@ -100,6 +104,31 @@ mod tests {
         assert_eq!(parse_counts("ruff=2\nbandit=0\n"), None);
         assert_eq!(parse_counts("ruff=x\nbandit=0\nmypy=1\n"), None);
         assert_eq!(parse_counts("could not run: no docker"), None);
+    }
+
+    #[test]
+    fn count_command_asks_bandit_for_medium_and_above_only() {
+        assert!(count_command("a.py").contains("bandit -q -ll "));
+    }
+
+    /// Runs wherever the tools are installed: replacing os.popen with subprocess.run(shlex.split(..))
+    /// is a security improvement and must pass even though it adds low-severity bandit notes.
+    #[test]
+    fn a_safer_call_that_adds_only_low_severity_notes_passes() {
+        let base = std::env::temp_dir().join(format!("autoresolve-lint-sec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (before, after) = (base.join("before"), base.join("after"));
+        std::fs::create_dir_all(&before).unwrap();
+        std::fs::create_dir_all(&after).unwrap();
+        std::fs::write(before.join("m.py"), "import os\n\ndef run(cmd):\n    return os.popen(cmd).read()\n").unwrap();
+        std::fs::write(
+            after.join("m.py"),
+            "import shlex\nimport subprocess\n\ndef run(cmd):\n    return subprocess.run(shlex.split(cmd), capture_output=True, text=True).stdout\n",
+        )
+        .unwrap();
+        if let Some(c) = check(&after, &before, "m.py") {
+            assert!(c.passed, "a safer call must not fail on low-severity notes: {}", c.detail);
+        }
     }
 
     #[test]

@@ -157,6 +157,7 @@ impl Provider for Gemini {
                 Err(e) if attempt < 4 => {
                     let wait = 2u64.pow(attempt + 1);
                     eprintln!("[retry] network error ({e}), waiting {wait}s (attempt {}/4)", attempt + 1);
+                    crate::events::emit("retry", json!({"wait_s": wait, "reason": "network", "attempt": attempt + 1}));
                     tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                     attempt += 1;
                     continue;
@@ -183,6 +184,7 @@ impl Provider for Gemini {
             if retryable && attempt < 4 {
                 let wait = retry_delay(&v).unwrap_or(2u64.pow(attempt + 1)).min(90);
                 eprintln!("[retry] Gemini returned {status}, waiting {wait}s (attempt {}/4)", attempt + 1);
+                crate::events::emit("retry", json!({"wait_s": wait, "reason": status.as_u16(), "attempt": attempt + 1}));
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                 attempt += 1;
                 continue;

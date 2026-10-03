@@ -8,6 +8,7 @@ use autoresolve_core::policy::Policy;
 use autoresolve_core::report;
 use autoresolve_core::review;
 use clap::{Parser, Subcommand};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -455,23 +456,29 @@ async fn main() -> Result<()> {
         Cmd::Events { root, run, list, raw } => {
             let path = root.join(".autoresolve").join(events::LOG_FILE);
             let all = events::read_events(&path, None).with_context(|| "no event log yet (run `fix` or `review` first)")?;
+            // writes ignore a closed pipe (`| head`) instead of panicking
+            let mut stdout = std::io::stdout().lock();
             if list {
                 for (id, n) in events::runs(&all) {
-                    println!("{id}  {n} events");
+                    if writeln!(stdout, "{id}  {n} events").is_err() {
+                        break;
+                    }
                 }
                 return Ok(());
             }
             let Some(id) = run.or_else(|| events::runs(&all).last().map(|(r, _)| r.clone())) else {
-                println!("no events recorded");
+                let _ = writeln!(stdout, "no events recorded");
                 return Ok(());
             };
             let mine: Vec<_> = all.into_iter().filter(|e| e.run == id).collect();
             if raw {
                 for e in &mine {
-                    println!("{}", serde_json::to_string(e)?);
+                    if writeln!(stdout, "{}", serde_json::to_string(e)?).is_err() {
+                        break;
+                    }
                 }
             } else {
-                print!("{}", events::summarize(&mine));
+                let _ = write!(stdout, "{}", events::summarize(&mine));
             }
         }
         Cmd::ApplyPlan { root, plan } => {
