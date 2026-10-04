@@ -30,6 +30,16 @@ enum Format {
     Sarif,
 }
 
+/// Reviewer ensemble settings: flags win, then the AUTORESOLVE_* variables, then the single-reviewer default.
+fn review_opts(reviewers: Option<usize>, votes: Option<usize>, min_votes: Option<usize>) -> review::ReviewOpts {
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    review::ReviewOpts {
+        specialists: reviewers.or_else(|| env("AUTORESOLVE_REVIEWERS")).unwrap_or(0).min(3),
+        votes: votes.or_else(|| env("AUTORESOLVE_VOTES")).unwrap_or(1).max(1),
+        min_votes: min_votes.or_else(|| env("AUTORESOLVE_MIN_VOTES")),
+    }
+}
+
 /// Print a report, or write it to a file when --out is given.
 fn emit(out: &Option<PathBuf>, text: &str) -> Result<()> {
     match out {
@@ -80,6 +90,17 @@ enum Cmd {
         /// Maximum agent steps before giving up
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
+        /// Specialist reviewers to run at once (0 = one generalist; up to 3: correctness, security, robustness).
+        /// Also read from AUTORESOLVE_REVIEWERS.
+        #[arg(long)]
+        reviewers: Option<usize>,
+        /// Run each reviewer this many times and keep issues that enough runs agree on (default 1).
+        /// Also read from AUTORESOLVE_VOTES.
+        #[arg(long)]
+        votes: Option<usize>,
+        /// Runs that must agree when voting (default: a majority). Also AUTORESOLVE_MIN_VOTES.
+        #[arg(long)]
+        min_votes: Option<usize>,
         /// Output format: text, json, markdown or sarif
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
@@ -100,6 +121,17 @@ enum Cmd {
         apply: bool,
         #[arg(long, default_value_t = 12)]
         max_steps: usize,
+        /// Specialist reviewers to run at once (0 = one generalist; up to 3: correctness, security, robustness).
+        /// Also read from AUTORESOLVE_REVIEWERS.
+        #[arg(long)]
+        reviewers: Option<usize>,
+        /// Run each reviewer this many times and keep issues that enough runs agree on (default 1).
+        /// Also read from AUTORESOLVE_VOTES.
+        #[arg(long)]
+        votes: Option<usize>,
+        /// Runs that must agree when voting (default: a majority). Also AUTORESOLVE_MIN_VOTES.
+        #[arg(long)]
+        min_votes: Option<usize>,
     },
     /// Summarize a recorded run: per-role model calls, time, tool use and outcome (no models involved)
     Events {
@@ -225,14 +257,16 @@ async fn main() -> Result<()> {
                 println!("{file}:{start}-{end}  {kind:<8} {qualname}");
             }
         }
-        Cmd::Review { file, root, max_steps, format, out } => {
+        Cmd::Review { file, root, max_steps, reviewers, votes, min_votes, format, out } => {
             let provider = llm::provider_from_env(false)?;
             events::init(&root.canonicalize()?.join(".autoresolve").join(events::LOG_FILE), &events::new_run_id())?;
             events::emit("run_start", events::run_config("review", &file.display().to_string()));
             index_repo(&root, &cli.db)?; // always review against a fresh graph
             let graph = Graph::open(&cli.db)?;
             let tools = Tools::new(&graph, &root)?;
-            let judged = review::review(&provider, &tools, &file.display().to_string(), max_steps).await?;
+            let opts = review_opts(reviewers, votes, min_votes);
+            events::emit("review_config", serde_json::json!({"reviewers": opts.specialists, "votes": opts.votes, "quorum": opts.quorum()}));
+            let judged = review::review_with(&provider, &tools, &file.display().to_string(), max_steps, &opts).await?;
             events::emit(
                 "run_end",
                 serde_json::json!({
@@ -265,7 +299,7 @@ async fn main() -> Result<()> {
             }
             eprintln!("[usage] {} model calls", provider.calls());
         }
-        Cmd::Fix { file, root, test_cmd, apply, max_steps } => {
+        Cmd::Fix { file, root, test_cmd, apply, max_steps, reviewers, votes, min_votes } => {
             let provider = llm::provider_from_env(false)?; // reviewer and skeptic
             let strong = llm::provider_from_env(true)?; // tester, fixer and patch gate
             index_repo(&root, &cli.db)?;
@@ -282,7 +316,9 @@ async fn main() -> Result<()> {
             let work = fix::create_sandbox(&real, "work")?;
             let tools = Tools::new(&graph, &work)?;
             let target = file.display().to_string();
-            let judged = review::review(&provider, &tools, &target, max_steps).await?;
+            let opts = review_opts(reviewers, votes, min_votes);
+            events::emit("review_config", serde_json::json!({"reviewers": opts.specialists, "votes": opts.votes, "quorum": opts.quorum()}));
+            let judged = review::review_with(&provider, &tools, &target, max_steps, &opts).await?;
             let confirmed: Vec<_> = judged.into_iter().filter(|j| j.verdict.verdict == "confirmed").collect();
             events::emit("review_done", serde_json::json!({"confirmed": confirmed.len()}));
             println!("\n{} confirmed issue(s) to fix", confirmed.len());
