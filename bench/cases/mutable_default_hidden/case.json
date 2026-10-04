@@ -6,6 +6,12 @@
   "bug_lines": [
     1
   ],
+  "bugs": [
+    {
+      "name": "mutable_default_hidden",
+      "line": 1
+    }
+  ],
   "test_cmd": "python3 -c 'import journal'",
   "note": "the shared default list is invisible to callers"
 }

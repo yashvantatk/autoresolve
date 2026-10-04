@@ -6,6 +6,12 @@
   "bug_lines": [
     5
   ],
+  "bugs": [
+    {
+      "name": "bare_except",
+      "line": 5
+    }
+  ],
   "test_cmd": "python3 -c 'import parsing'",
   "note": ""
 }

@@ -6,6 +6,12 @@
   "bug_lines": [
     3
   ],
+  "bugs": [
+    {
+      "name": "division_by_zero",
+      "line": 3
+    }
+  ],
   "test_cmd": "python3 -c 'import stats'",
   "note": ""
 }

@@ -1,0 +1,27 @@
+{
+  "id": "multi_scheduler",
+  "file": "scheduler.py",
+  "category": "multi_bug",
+  "observable": true,
+  "bug_lines": [
+    3,
+    8,
+    13
+  ],
+  "bugs": [
+    {
+      "name": "pick_slot",
+      "line": 3
+    },
+    {
+      "name": "average_wait",
+      "line": 8
+    },
+    {
+      "name": "normalize_name",
+      "line": 13
+    }
+  ],
+  "test_cmd": "python3 -c 'import scheduler'",
+  "note": ""
+}

@@ -51,11 +51,26 @@ def load_cases(only=None):
     return out
 
 
-def oracle_passes(case, workdir):
+def run_oracle(case, workdir):
+    """(passed, per_bug) where per_bug maps a bug name to True/False for oracles that report `OK name` / `FAIL name`."""
     env = {**os.environ, "BENCH_DIR": str(workdir), "PYTHONPATH": str(workdir), "PYTHONDONTWRITEBYTECODE": "1"}
     r = subprocess.run([sys.executable, str(case["dir"] / "oracle.py")], cwd=workdir, env=env,
                        capture_output=True, text=True, timeout=120)
-    return r.returncode == 0
+    detail = {}
+    for line in r.stdout.splitlines():
+        if line.startswith("OK "):
+            detail[line[3:].strip()] = True
+        elif line.startswith("FAIL "):
+            detail[line[5:].strip()] = False
+    return r.returncode == 0, detail
+
+
+def oracle_passes(case, workdir):
+    return run_oracle(case, workdir)[0]
+
+
+def bugs_of(case):
+    return case.get("bugs") or [{"name": case["id"], "line": n} for n in case["bug_lines"]]
 
 
 def selfcheck(args):
@@ -64,11 +79,14 @@ def selfcheck(args):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
             shutil.copy(c["dir"] / c["file"], t / c["file"])
-            buggy_ok = oracle_passes(c, t)
+            buggy_ok, buggy_detail = run_oracle(c, t)
             shutil.copy(c["dir"] / "fixed.py", t / c["file"])
-            fixed_ok = oracle_passes(c, t)
+            fixed_ok, fixed_detail = run_oracle(c, t)
         clean = c["category"] == "clean_control"
         ok = (buggy_ok and fixed_ok) if clean else ((not buggy_ok) and fixed_ok)
+        if len(bugs_of(c)) > 1:  # multi-bug: each bug must fail alone on the buggy file and pass on the fix
+            names = [b["name"] for b in bugs_of(c)]
+            ok = ok and all(buggy_detail.get(n) is False for n in names) and all(fixed_detail.get(n) is True for n in names)
         bad += 0 if ok else 1
         print(f"{'ok ' if ok else 'BAD'}  {c['id']:<26} oracle on buggy: {'pass' if buggy_ok else 'fail'}, on fixed: {'pass' if fixed_ok else 'fail'}")
     print("all cases are sound" if not bad else f"{bad} case(s) are broken")
@@ -134,6 +152,10 @@ def run_case(case, args):
         r = subprocess.run([args.bin, "fix", case["file"], "--root", ".", "--test-cmd", case["test_cmd"]],
                            cwd=work, capture_output=True, text=True, timeout=args.timeout)
         text = (r.stdout or "") + (r.stderr or "")
+        if getattr(args, "evdir", None):
+            (args.evdir / f"{case['id']}.log").write_text(text)
+            if (work / ".autoresolve" / "plan.json").exists():
+                shutil.copy(work / ".autoresolve" / "plan.json", args.evdir / f"{case['id']}.plan.json")
         if "QUOTA_EXHAUSTED" in text:
             row["status"] = "quota"
         elif r.returncode != 0:
@@ -148,8 +170,12 @@ def run_case(case, args):
     row.update(from_events(read_events(work)))
     lines = row["confirmed_lines"]
     row["confirmed"] = len(lines)
-    bug_lines = case["bug_lines"]
-    row["detected"] = any(abs(l - b) <= 2 for l in lines for b in bug_lines) if bug_lines else None
+    bugs = bugs_of(case)
+    near = lambda l, b: abs(l - b["line"]) <= 2
+    row["bugs_total"] = len(bugs)
+    row["bugs_found"] = sum(1 for b in bugs if any(near(l, b) for l in lines))
+    row["unmatched_findings"] = sum(1 for l in lines if not any(near(l, b) for b in bugs))
+    row["detected"] = (row["bugs_found"] == len(bugs)) if bugs else None
 
     # score two worlds from the saved plan: proven fixes only, and everything including unproven
     for name, extra in (("proven_only", []), ("with_unproven", ["--include-unproven"])):
@@ -158,7 +184,9 @@ def run_case(case, args):
         a = subprocess.run([args.bin, "apply-plan", "--root", ".", *extra], cwd=copy,
                            capture_output=True, text=True, timeout=600)
         row[f"apply_{name}_ok"] = a.returncode == 0
-        row[f"oracle_{name}"] = oracle_passes(case, copy)
+        passed, detail = run_oracle(case, copy)
+        row[f"oracle_{name}"] = passed
+        row[f"bugs_fixed_{name}"] = sum(1 for b in bugs if detail.get(b["name"])) if detail else (1 if passed and bugs else 0)
         shutil.rmtree(copy, ignore_errors=True)
     shutil.rmtree(work, ignore_errors=True)
     return row
@@ -171,15 +199,25 @@ def summarize(rows):
     pct = lambda a, b: f"{a}/{b}" + (f" ({100 * a // b}%)" if b else "")
     med = lambda xs: round(statistics.median(xs), 1) if xs else None
     unproven = [r for r in bug if r["verified"] > r["proven"]]
+    tot = sum(r.get("bugs_total", 1) for r in bug)
+    found = sum(r.get("bugs_found", 1 if r["detected"] else 0) for r in bug)
+    fixed_p = sum(r.get("bugs_fixed_proven_only", 1 if r["oracle_proven_only"] else 0) for r in bug)
+    fixed_a = sum(r.get("bugs_fixed_with_unproven", 1 if r["oracle_with_unproven"] else 0) for r in bug)
+    extra = sum(r.get("unmatched_findings", 0) for r in bug)
     return {
         "bug cases scored": n,
-        "detected": pct(sum(1 for r in bug if r["detected"]), n),
+        "bugs detected (recall)": pct(found, tot),
+        "bugs fixed, proven only": pct(fixed_p, tot),
+        "bugs fixed, with unproven": pct(fixed_a, tot),
+        "extra findings on bug files": extra,
+        "cases fully detected": pct(sum(1 for r in bug if r["detected"]), n),
         "strict pass@1 (proven fixes only)": pct(sum(1 for r in bug if r["oracle_proven_only"]), n),
         "lenient pass@1 (with unproven)": pct(sum(1 for r in bug if r["oracle_with_unproven"]), n),
         "false trust (proven but wrong)": sum(1 for r in bug if r["proven"] > 0 and not r["oracle_proven_only"]),
         "unproven correct": pct(sum(1 for r in unproven if r["oracle_with_unproven"]), len(unproven)),
         "clean controls": len(clean),
         "false alarms (clean code)": sum(1 for r in clean if r["confirmed"] > 0),
+        "false-alarm findings (clean code)": sum(r["confirmed"] for r in clean),
         "broke clean code": sum(1 for r in clean if not r["oracle_with_unproven"]),
         "median wall s": med([r["wall_s"] for r in rows if r["status"] == "ok"]),
         "mean calls per case": round(statistics.mean([r["calls_main"] + r["calls_worker"] for r in rows if r["status"] == "ok"]), 1) if any(r["status"] == "ok" for r in rows) else None,
@@ -240,19 +278,29 @@ def run(args):
 
 
 def compare(args):
+    """One column per label. Result files with the same label are merged (a later run of a case replaces an
+    earlier one), so a suite run in several sittings counts as one run. --cases limits every column to the
+    same cases, which is what makes two configurations comparable."""
     files = [Path(f) for f in args.files] or sorted(RESULTS.glob("*.jsonl"))
     if not files:
         sys.exit("no result files")
-    sums = []
+    by_label = {}
     for f in files:
-        rows = [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
-        if rows:
-            sums.append((f"{rows[0]['label']} ({f.stem[-15:]})", summarize(rows)))
-    keys = list(sums[0][1].keys())
-    print("| metric | " + " | ".join(n for n, _ in sums) + " |")
-    print("|---|" + "---|" * len(sums))
+        for line in f.read_text().splitlines():
+            if line.strip():
+                r = json.loads(line)
+                by_label.setdefault(r["label"], {})[r["case"]] = r
+    only = set(args.cases) if args.cases else None
+    cols = []
+    for label, rows in by_label.items():
+        picked = [r for c, r in rows.items() if not only or c in only]
+        if picked:
+            cols.append((f"{label} ({len(picked)} cases)", summarize(picked)))
+    keys = list(cols[0][1].keys())
+    print("| metric | " + " | ".join(n for n, _ in cols) + " |")
+    print("|---|" + "---|" * len(cols))
     for k in keys:
-        print(f"| {k} | " + " | ".join(str(s[k]) for _, s in sums) + " |")
+        print(f"| {k} | " + " | ".join(str(s[k]) for _, s in cols) + " |")
     return 0
 
 
@@ -272,6 +320,7 @@ def main():
     r.set_defaults(fn=run)
     c = sub.add_parser("compare")
     c.add_argument("files", nargs="*")
+    c.add_argument("--cases", nargs="*", help="compare only these case ids")
     c.set_defaults(fn=compare)
     a = p.parse_args()
     sys.exit(a.fn(a))

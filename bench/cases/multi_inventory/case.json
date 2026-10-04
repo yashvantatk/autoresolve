@@ -1,0 +1,27 @@
+{
+  "id": "multi_inventory",
+  "file": "inventory.py",
+  "category": "multi_bug",
+  "observable": true,
+  "bug_lines": [
+    5,
+    14,
+    19
+  ],
+  "bugs": [
+    {
+      "name": "total_price",
+      "line": 5
+    },
+    {
+      "name": "find_item",
+      "line": 14
+    },
+    {
+      "name": "top_n",
+      "line": 19
+    }
+  ],
+  "test_cmd": "python3 -c 'import inventory'",
+  "note": ""
+}

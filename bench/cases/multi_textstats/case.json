@@ -1,0 +1,27 @@
+{
+  "id": "multi_textstats",
+  "file": "textstats.py",
+  "category": "multi_bug",
+  "observable": true,
+  "bug_lines": [
+    5,
+    14,
+    19
+  ],
+  "bugs": [
+    {
+      "name": "word_freq",
+      "line": 5
+    },
+    {
+      "name": "longest_word",
+      "line": 14
+    },
+    {
+      "name": "is_palindrome",
+      "line": 19
+    }
+  ],
+  "test_cmd": "python3 -c 'import textstats'",
+  "note": ""
+}

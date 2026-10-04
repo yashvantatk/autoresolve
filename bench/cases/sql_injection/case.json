@@ -6,6 +6,12 @@
   "bug_lines": [
     6
   ],
+  "bugs": [
+    {
+      "name": "sql_injection",
+      "line": 6
+    }
+  ],
   "test_cmd": "python3 -c 'import repo'",
   "note": ""
 }

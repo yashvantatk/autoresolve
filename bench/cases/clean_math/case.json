@@ -4,6 +4,7 @@
   "category": "clean_control",
   "observable": true,
   "bug_lines": [],
+  "bugs": [],
   "test_cmd": "python3 -c 'import geometry'",
   "note": ""
 }

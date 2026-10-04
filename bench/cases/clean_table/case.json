@@ -1,10 +1,10 @@
 {
-  "id": "clean_text",
-  "file": "textutil.py",
+  "id": "clean_table",
+  "file": "tablefmt.py",
   "category": "clean_control",
   "observable": true,
   "bug_lines": [],
   "bugs": [],
-  "test_cmd": "python3 -c 'import textutil'",
+  "test_cmd": "python3 -c 'import tablefmt'",
   "note": ""
 }

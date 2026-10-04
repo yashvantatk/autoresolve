@@ -1,6 +1,6 @@
 # AutoResolve seeded-bug benchmark
 
-15 tiny Python cases (13 with one seeded bug, 2 clean controls). Each case has a hidden oracle test
+22 tiny Python cases: 10 with one seeded bug, 3 with three bugs each (they measure recall), 9 clean controls (they measure false alarms). Each case has a hidden oracle test
 that decides whether the code is really correct, so scores never depend on what the AI claims.
 
     python3 bench/run_bench.py selfcheck                    # are the cases themselves sound? (no models, free)

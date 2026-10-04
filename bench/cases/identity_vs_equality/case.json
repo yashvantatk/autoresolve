@@ -6,6 +6,12 @@
   "bug_lines": [
     3
   ],
+  "bugs": [
+    {
+      "name": "identity_vs_equality",
+      "line": 3
+    }
+  ],
   "test_cmd": "python3 -c 'import status'",
   "note": ""
 }

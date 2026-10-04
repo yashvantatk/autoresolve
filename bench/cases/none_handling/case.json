@@ -6,6 +6,12 @@
   "bug_lines": [
     10
   ],
+  "bugs": [
+    {
+      "name": "none_handling",
+      "line": 10
+    }
+  ],
   "test_cmd": "python3 -c 'import users'",
   "note": ""
 }
