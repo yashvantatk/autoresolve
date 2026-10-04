@@ -117,7 +117,8 @@ object type. The test must fail ONLY because of the claimed bug, and pass for an
 Also report `expected_failure`: a short text that the failure output of the buggy code will contain, \
 taken from the bug claim. Usually this is an exception class name such as IndexError or TypeError, \
 or AssertionError when the bug is a wrong result. Use an exact message only if you are certain of it. \
-A test that fails in any other way is rejected. Test observable behavior only: call the code the way \
+A test that fails in any other way is rejected. Never write an exploit-succeeds test: for a vulnerability or \
+an unwanted side effect, assert that the harmful effect does NOT happen. Test observable behavior only: call the code the way \
 a caller would and assert on what it returns or does. Never inspect the implementation (no \
 `__defaults__`, `__code__`, `inspect`, `ast`, or reading source files); such tests are rejected. For a \
 mutable-default-argument bug, call the function twice without the argument and assert that the second \
@@ -344,7 +345,10 @@ pub async fn reproduce(
             return Ok(t); // fails on the buggy code, the way the claim predicts
         }
         feedback = if ok {
-            "your test PASSED on the current buggy code; it must fail there".to_string()
+            "your test PASSED on the current buggy code; it must fail there. A regression test asserts the CORRECT \
+                 behavior, so it fails while the bug exists and passes once it is fixed. For a vulnerability or an \
+                 unwanted side effect, do not assert that the exploit works: assert that the harmful effect does NOT happen"
+                .to_string()
         } else if !broken {
             format!(
                 "your test fails, but not the way the bug claim predicts. You said it would fail with `{}`, but it failed with: {}",
