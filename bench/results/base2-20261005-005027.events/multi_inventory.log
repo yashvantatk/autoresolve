@@ -1,0 +1,221 @@
+
+3 confirmed issue(s) to fix
+
+=== [HIGH] inventory.py:5  Incorrect price calculation formula ===
+regression test: Check if total_price correctly calculates sum of price * quantity. (fails on the current code, as it should)
+behavior guard: The total_price function correctly calculates the total for a single item where price times quantity equals price plus quantity. (passes on the current code)
+Fix incorrect total price calculation formula by changing addition to multiplication.
+--- a/inventory.py
++++ b/inventory.py
+@@ -3,5 +3,5 @@
+     total = 0
+     for name, price, quantity in items:
+-        total += price + quantity
++        total += price * quantity
+     return total
+ 
+--- a/autoresolve_regression/test_0_incorrect_price_calculation_formula.py
++++ b/autoresolve_regression/test_0_incorrect_price_calculation_formula.py
+@@ -0,0 +1,11 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from inventory import total_price
++
++items = [
++    ("apple", 10, 2), # 10 * 2 = 20
++    ("banana", 5, 3)  # 5 * 3 = 15
++]
++
++assert total_price(items) == 35, f"Expected 35, got {total_price(items)}"
+  [PASS] syntax inventory.py 
+  [PASS] no new anti-patterns inventory.py 0 -> 0 findings
+  [PASS] lint, security and types inventory.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import inventory'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The patch correctly fixes the formula for calculating the total price by changing the addition operator to multiplication. This change is necessary as it directly addresses the bug described in the claim.
+  -> PROVEN: the regression test fails before the patch and passes after
+
+=== [HIGH] inventory.py:14  Incorrect loop termination in find_item ===
+regression test: Test that find_item can correctly find an item even if it is not the first one in the list. (fails on the current code, as it should)
+behavior guard: Verifies that find_item correctly returns the target item when it is the first element in the list. (passes on the current code)
+Move the `return None` statement outside of the `for` loop to fix incorrect loop termination in `find_item`.
+--- a/inventory.py
++++ b/inventory.py
+@@ -12,5 +12,5 @@
+         if item[0] == name:
+             return item
+-        return None
++    return None
+ 
+ 
+--- a/autoresolve_regression/test_1_incorrect_loop_termination_in_find_item.py
++++ b/autoresolve_regression/test_1_incorrect_loop_termination_in_find_item.py
+@@ -0,0 +1,9 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from inventory import find_item
++
++items = [("apple", 1, 10), ("banana", 2, 5)]
++result = find_item(items, "banana")
++
++assert result == ("banana", 2, 5), f"Expected ('banana', 2, 5), but got {result}"
+  [PASS] syntax inventory.py 
+  [PASS] no new anti-patterns inventory.py 0 -> 0 findings
+  [PASS] lint, security and types inventory.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import inventory'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The original code incorrectly returned None immediately after checking only the first item if it did not match, instead of continuing the loop. The patch correctly moves the return None outside the loop, ensuring all items are checked.
+  -> PROVEN: the regression test fails before the patch and passes after
+
+=== [HIGH] inventory.py:19  Incorrect sorting order in top_n ===
+regression test: Verify that top_n returns the largest n values in descending order. (fails on the current code, as it should)
+behavior guard: The top_n function should return a list of length n containing elements from the input list. (passes on the current code)
+Change top_n to return the n largest values by sorting in descending order.
+--- a/inventory.py
++++ b/inventory.py
+@@ -17,3 +17,3 @@
+ def top_n(values, n):
+     """Return the n largest values, largest first."""
+-    return sorted(values)[:n]
++    return sorted(values, reverse=True)[:n]
+--- a/autoresolve_regression/test_2_incorrect_sorting_order_in_top_n.py
++++ b/autoresolve_regression/test_2_incorrect_sorting_order_in_top_n.py
+@@ -0,0 +1,11 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from inventory import top_n
++
++values = [1, 2, 3, 4, 5]
++n = 3
++result = top_n(values, n)
++expected = [5, 4, 3]
++
++assert result == expected, f"Expected {expected}, but got {result}"
+  [PASS] syntax inventory.py 
+  [PASS] no new anti-patterns inventory.py 0 -> 0 findings
+  [PASS] lint, security and types inventory.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import inventory'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The patch correctly changes sorted() to sort in descending order (reverse=True) as required to return the n largest values, fulfilling the function's docstring. No unrelated changes were made.
+  -> PROVEN: the regression test fails before the patch and passes after
+
+3/3 fixes verified, 3 proven by a regression test (0 unproven suggestion(s)), 0 resolved by earlier fixes
+plan saved to /tmp/bench-multi_inventory-35c7mc4a/.autoresolve/plan.json (3 proven fix(es), 0 unproven suggestion(s)). Review it, then apply the proven ones with:
+  cargo run -p autoresolve-cli -- apply-plan
+[sandbox] docker, image autoresolve-sandbox, no network, 1 cpu, 512 MB, read-only root filesystem
+[policy] max 3 file(s) and 40 changed line(s) per patch; .git/, .autoresolve/, policy.toml and saved tests are protected
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":200,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] static_findings({"file":"inventory.py"})
+[waiting for gemini-3.1-flash-lite ...]
+[reviewer] proposed 3 issue(s); handing to the skeptic
+[skeptic] challenging: Incorrect price calculation formula
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"total_price"})
+[waiting for gemini-3.1-flash-lite ...]
+[skeptic] challenging: Incorrect loop termination in find_item
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 19s (attempt 1/4)
+[skeptic] challenging: Incorrect sorting order in top_n
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":19,"file":"inventory.py","start":17})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"top_n"})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 27s (attempt 1/4)
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"find_item"})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 35s (attempt 1/4)
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":19,"file":"inventory.py","start":17})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":19,"file":"inventory.py","start":17})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":19,"file":"inventory.py","start":17})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":19,"file":"inventory.py","start":17})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":20,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"top_n"})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 38s (attempt 1/4)
+[usage] 32 model calls (reviewer/skeptic/patch gate) + 27 (tester/fixer)

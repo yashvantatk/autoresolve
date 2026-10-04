@@ -1,0 +1,15 @@
+
+0 confirmed issue(s) to fix
+
+0/0 fixes verified, 0 proven by a regression test (0 unproven suggestion(s)), 0 resolved by earlier fixes
+[sandbox] docker, image autoresolve-sandbox, no network, 1 cpu, 512 MB, read-only root filesystem
+[policy] max 3 file(s) and 40 changed line(s) per patch; .git/, .autoresolve/, policy.toml and saved tests are protected
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":23,"file":"./lrucache.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] static_findings({"file":"./lrucache.py"})
+[waiting for gemini-3.1-flash-lite ...]
+[reviewer] proposed 0 issue(s); handing to the skeptic
+[usage] 4 model calls (reviewer/skeptic/patch gate) + 0 (tester/fixer)

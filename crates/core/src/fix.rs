@@ -18,7 +18,74 @@ and a '|' character; never include that prefix in `search` or `replace`. Do not 
 or touch unrelated code. Change only what the bug requires: never rename or swap method calls \
 on other objects, never change return types or signatures, and never bend production code to \
 make a regression test pass. If the regression test seems to use the wrong kind of object, keep \
-production code unchanged and say so in `summary`.";
+production code unchanged and say so in `summary`. The task may include a DOCUMENTED CONTRACT (the function's docstring): it is the specification. If the suggested fix conflicts with it, follow the contract, and never widen what an exception handler catches beyond what the contract allows.";
+
+const CONTRACT_MARK: &str = "DOCUMENTED CONTRACT";
+
+/// The signature and docstring of the function that contains `line`: what the author promised.
+/// Deterministic text processing, no model involved. None when there is no docstring.
+pub fn enclosing_contract(src: &str, line: usize) -> Option<String> {
+    let lines: Vec<&str> = src.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let indent = |s: &str| s.len() - s.trim_start().len();
+    let is_def = |s: &str| {
+        let t = s.trim_start();
+        t.starts_with("def ") || t.starts_with("async def ")
+    };
+    let at = line.saturating_sub(1).min(lines.len() - 1);
+    let target_indent = indent(lines[at]);
+    let start = (0..=at).rev().find(|&i| is_def(lines[i]) && (i == at || indent(lines[i]) < target_indent))?;
+    // the signature may span several lines; it ends at the first line whose code part ends with ':'
+    let mut sig_end = start;
+    while !lines[sig_end].split('#').next().unwrap_or("").trim_end().ends_with(':') {
+        sig_end += 1;
+        if sig_end >= lines.len() || sig_end > start + 8 {
+            return None;
+        }
+    }
+    let first = lines.get(sig_end + 1..)?.iter().position(|l| !l.trim().is_empty())? + sig_end + 1;
+    let t = lines[first].trim_start();
+    let t = t.strip_prefix(['r', 'R', 'u', 'U']).unwrap_or(t);
+    let quote = if t.starts_with("\"\"\"") {
+        "\"\"\""
+    } else if t.starts_with("\'\'\'") {
+        "\'\'\'"
+    } else {
+        return None;
+    };
+    let mut doc: Vec<&str> = Vec::new();
+    for (k, l) in lines.iter().enumerate().skip(first).take(40) {
+        doc.push(*l);
+        let rest = if k == first { &t[3..] } else { *l };
+        if rest.contains(quote) {
+            break;
+        }
+    }
+    let text = format!("{}\n{}", lines[start..=sig_end].join("\n"), doc.join("\n"));
+    Some(text.chars().take(2000).collect())
+}
+
+/// A copy of the issue whose explanation also carries the function's documented contract, so the
+/// tester, fixer and gate all judge against the same specification. Idempotent.
+pub fn with_contract(root: &Path, issue: &Issue) -> Issue {
+    let mut out = issue.clone();
+    if issue.explanation.contains(CONTRACT_MARK) {
+        return out;
+    }
+    let rel = Path::new(&issue.file);
+    if rel.is_absolute() || !rel.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        return out;
+    }
+    let Ok(src) = std::fs::read_to_string(root.join(rel)) else { return out };
+    if let Some(c) = enclosing_contract(&src, issue.line as usize) {
+        out.explanation.push_str(&format!(
+            "\n\n{CONTRACT_MARK} of the function containing the bug (this is the specification; where the suggested fix conflicts with it, the contract wins):\n{c}"
+        ));
+    }
+    out
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edit {
@@ -127,7 +194,7 @@ copy the code under test into the test. If the claim is about an unwanted side e
 a command run), a correct fix may raise instead of returning: call the code inside `try/except Exception: \
 pass` and assert ONLY on the side effect afterwards (this is the one allowed use of try/except). Create \
 any side-effect file inside a `tempfile.TemporaryDirectory()` and use absolute paths, because the repo \
-directory may be read-only.";
+directory may be read-only. If the task shows a DOCUMENTED CONTRACT, also assert the contract rules that bear on the claim (for example, when it says other errors must propagate, call the code with an input that raises a different exception and assert that it still propagates), so that a fix which breaks the contract fails the test.";
 
 const GUARD_SYSTEM: &str = "You write a BEHAVIOR GUARD: a minimal standalone Python script that checks the \
 code around a bug still works for ordinary, legitimate use. It must PASS on the current code and keep passing \
@@ -309,6 +376,7 @@ pub async fn reproduce(
     max_steps: usize,
 ) -> Result<ReproTest> {
     let root = tools.root();
+    let issue = &with_contract(root, issue);
     let mut feedback = String::new();
     let mut passed_last = false;
     for attempt in 1..=2 {
@@ -577,7 +645,7 @@ the patched code now behave differently there from the original, for example a c
 used to return a result now raising? (subprocess.check_output('echo hello', shell=False) raises, because a \
 string is then taken as the program name.) Never approve because a patch is small or because it acknowledges \
 the issue; judge only whether the defect is gone and nothing else changed. If your own reasoning says the \
-defect remains, still_has_defect must be true.";
+defect remains, still_has_defect must be true. If the task shows a DOCUMENTED CONTRACT, it is the specification: `contradicts_documented_contract` is true when the patched code behaves in a way the contract forbids (for example it swallows an exception the contract says must propagate, or returns something the contract does not allow), even if the change looks standard or the bug claim itself suggested it.";
 
 /// What the patch gate must answer. The accept/reject decision is made in code from these two
 /// booleans, so a verdict can never contradict the reasoning written next to it.
@@ -591,9 +659,10 @@ fn submit_gate_spec() -> ToolSpec {
                 "still_has_defect": {"type": "boolean", "description": "true if the patched code still contains the problem the claim describes"},
                 "unrelated_changes": {"type": "boolean", "description": "true if the diff changes anything the claim does not require"},
                 "changes_normal_behavior": {"type": "boolean", "description": "true if ordinary valid input now behaves differently from the original (for example raises)"},
+                "contradicts_documented_contract": {"type": "boolean", "description": "true if the patched code behaves in a way the documented contract (docstring) forbids; false when no contract is shown"},
                 "reason": {"type": "string", "description": "one or two sentences justifying the answers"}
             },
-            "required": ["still_has_defect", "unrelated_changes", "changes_normal_behavior", "reason"]
+            "required": ["still_has_defect", "unrelated_changes", "changes_normal_behavior", "contradicts_documented_contract", "reason"]
         }),
     }
 }
@@ -603,6 +672,8 @@ struct GateAnswer {
     still_has_defect: bool,
     unrelated_changes: bool,
     changes_normal_behavior: bool,
+    #[serde(default)]
+    contradicts_documented_contract: bool,
     reason: String,
 }
 
@@ -617,6 +688,9 @@ fn gate_decision(a: GateAnswer) -> Verdict {
     }
     if a.changes_normal_behavior {
         problems.push("ordinary use now behaves differently");
+    }
+    if a.contradicts_documented_contract {
+        problems.push("the patch contradicts the documented contract");
     }
     if problems.is_empty() {
         Verdict { verdict: "confirmed".into(), reason: a.reason }
@@ -708,6 +782,7 @@ pub async fn fix_issue(
     max_steps: usize,
 ) -> Result<Outcome> {
     let root = tools.root();
+    let issue = &with_contract(root, issue);
     let slug: Option<&str> = repro.map(|(s, _)| s);
     let mut current: Option<ReproTest> = repro.map(|(_, t)| t.clone());
     let others: String = siblings
@@ -1088,6 +1163,7 @@ mod tests {
                 still_has_defect: still,
                 unrelated_changes: unrelated,
                 changes_normal_behavior: normal,
+                contradicts_documented_contract: false,
                 reason: "r".into(),
             })
         };
@@ -1097,6 +1173,49 @@ mod tests {
         }
         assert!(v(true, false, false).reason.contains("still present"));
         assert!(v(false, false, true).reason.contains("ordinary use"));
+    }
+
+    #[test]
+    fn the_docstring_of_the_enclosing_function_is_extracted() {
+        let src = "def parse_int(text):\n    \"\"\"Return int(text), or None. Other errors must propagate.\"\"\"\n    try:\n        return int(text)\n    except:\n        return None\n\ndef other():\n    return 1\n";
+        let c = enclosing_contract(src, 5).unwrap();
+        assert!(c.contains("def parse_int(text):") && c.contains("Other errors must propagate"));
+        assert!(!c.contains("other()"));
+        // multi-line docstring and a signature that spans lines
+        let src2 = "class A:\n    def f(self,\n          x):  # note\n        '''Do it.\n\n        Must not raise.\n        '''\n        return x\n";
+        let c2 = enclosing_contract(src2, 8).unwrap();
+        assert!(c2.contains("Must not raise") && c2.contains("x):"));
+        // no docstring, or a line outside any function: no contract
+        assert!(enclosing_contract("def f():\n    return 1\n", 2).is_none());
+        assert!(enclosing_contract("X = 1\n\ndef g():\n    \"\"\"d\"\"\"\n", 1).is_none());
+    }
+
+    #[test]
+    fn the_contract_reaches_the_roles_and_the_gate_can_reject_on_it() {
+        let d = tmp("contract");
+        std::fs::write(d.join("p.py"), "def f(t):\n    \"\"\"Return int(t) or None. Other errors must propagate.\"\"\"\n    return int(t)\n").unwrap();
+        let issue = Issue {
+            severity: "low".into(),
+            file: "p.py".into(),
+            line: 3,
+            title: "t".into(),
+            explanation: "e".into(),
+            fix: "f".into(),
+        };
+        let with = with_contract(&d, &issue);
+        assert!(with.explanation.contains("DOCUMENTED CONTRACT") && with.explanation.contains("must propagate"));
+        assert_eq!(with_contract(&d, &with).explanation, with.explanation); // idempotent
+        let escape = Issue { file: "../p.py".into(), ..issue.clone() };
+        assert_eq!(with_contract(&d, &escape).explanation, "e"); // path escapes are ignored
+        let v = gate_decision(GateAnswer {
+            still_has_defect: false,
+            unrelated_changes: false,
+            changes_normal_behavior: false,
+            contradicts_documented_contract: true,
+            reason: "r".into(),
+        });
+        assert_eq!(v.verdict, "refuted");
+        assert!(v.reason.contains("documented contract"));
     }
 
     // ---- end-to-end with a scripted model: no network, no API key ----

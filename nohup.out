@@ -1,0 +1,20 @@
+[bench] clean_cache ...
+[bench] clean_dates ...
+Traceback (most recent call last):
+  File "/home/yashvant/autoresolve/bench/run_bench.py", line 330, in <module>
+    main()
+  File "/home/yashvant/autoresolve/bench/run_bench.py", line 326, in main
+    sys.exit(a.fn(a))
+  File "/home/yashvant/autoresolve/bench/run_bench.py", line 267, in run
+    row = run_case(c, args)
+  File "/home/yashvant/autoresolve/bench/run_bench.py", line 152, in run_case
+    r = subprocess.run([args.bin, "fix", case["file"], "--root", ".", "--test-cmd", case["test_cmd"]],
+  File "/usr/lib/python3.10/subprocess.py", line 505, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+  File "/usr/lib/python3.10/subprocess.py", line 1154, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+  File "/usr/lib/python3.10/subprocess.py", line 2021, in _communicate
+    ready = selector.select(timeout)
+  File "/usr/lib/python3.10/selectors.py", line 416, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt

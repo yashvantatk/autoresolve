@@ -11,6 +11,8 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod tui;
+
 #[derive(Parser)]
 #[command(name = "autoresolve", version, about = "Agentic code review & repair")]
 struct Cli {
@@ -132,6 +134,9 @@ enum Cmd {
         /// Runs that must agree when voting (default: a majority). Also AUTORESOLVE_MIN_VOTES.
         #[arg(long)]
         min_votes: Option<usize>,
+        /// Fix a bug you describe instead of running the reviewer, e.g. --issue "parse_int swallows TypeError"
+        #[arg(long)]
+        issue: Option<String>,
     },
     /// Summarize a recorded run: per-role model calls, time, tool use and outcome (no models involved)
     Events {
@@ -158,6 +163,14 @@ enum Cmd {
         #[arg(long)]
         include_unproven: bool,
     },
+    /// Terminal UI: watch a run live, replay it, read the diffs (reads .autoresolve/events.jsonl, no models)
+    Tui {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Run id to show (default: the newest run in the log)
+        #[arg(long)]
+        run: Option<String>,
+    },
         /// Run a command in the sandbox (Docker: no network, read-only mount unless --writable)
     Sandbox {
         cmd: String,
@@ -167,6 +180,33 @@ enum Cmd {
         #[arg(long)]
         writable: bool,
     },
+}
+
+/// Turn a free-text bug report into an Issue. If the text names a function defined in the file,
+/// the issue points into that function so its docstring (the contract) reaches the tester, fixer and gate.
+fn issue_from_report(root: &Path, file: &Path, text: &str) -> review::Issue {
+    let src = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+    let words: Vec<&str> = text.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).collect();
+    let mut line = 1usize;
+    for (n, l) in src.lines().enumerate() {
+        let t = l.trim_start();
+        if let Some(rest) = t.strip_prefix("def ").or_else(|| t.strip_prefix("async def ")) {
+            let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if !name.is_empty() && words.contains(&name.as_str()) {
+                line = n + 2; // a line inside the function body
+                break;
+            }
+        }
+    }
+    let title: String = text.chars().take(80).collect();
+    review::Issue {
+        severity: "medium".into(),
+        file: file.display().to_string(),
+        line: line as u32,
+        title,
+        explanation: text.to_string(),
+        fix: "none given: decide from the code and its documented contract".into(),
+    }
 }
 
 fn python_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -299,7 +339,7 @@ async fn main() -> Result<()> {
             }
             eprintln!("[usage] {} model calls", provider.calls());
         }
-        Cmd::Fix { file, root, test_cmd, apply, max_steps, reviewers, votes, min_votes } => {
+        Cmd::Fix { file, root, test_cmd, apply, max_steps, reviewers, votes, min_votes, issue } => {
             let provider = llm::provider_from_env(false)?; // reviewer and skeptic
             let strong = llm::provider_from_env(true)?; // tester, fixer and patch gate
             index_repo(&root, &cli.db)?;
@@ -318,7 +358,17 @@ async fn main() -> Result<()> {
             let target = file.display().to_string();
             let opts = review_opts(reviewers, votes, min_votes);
             events::emit("review_config", serde_json::json!({"reviewers": opts.specialists, "votes": opts.votes, "quorum": opts.quorum()}));
-            let judged = review::review_with(&provider, &tools, &target, max_steps, &opts).await?;
+            let judged = match &issue {
+                // issue-driven mode: the user's bug report replaces the reviewer and the skeptic
+                Some(text) => vec![review::Judged {
+                    issue: issue_from_report(&work, &file, text),
+                    verdict: review::Verdict {
+                        verdict: "confirmed".into(),
+                        reason: "reported by the user (--issue); reviewer and skeptic skipped".into(),
+                    },
+                }],
+                None => review::review_with(&provider, &tools, &target, max_steps, &opts).await?,
+            };
             let confirmed: Vec<_> = judged.into_iter().filter(|j| j.verdict.verdict == "confirmed").collect();
             events::emit("review_done", serde_json::json!({"confirmed": confirmed.len()}));
             println!("\n{} confirmed issue(s) to fix", confirmed.len());
@@ -590,6 +640,7 @@ async fn main() -> Result<()> {
             }
             println!("review the result with: git --no-pager diff");
         }
+        Cmd::Tui { root, run } => tui::run(&root, run)?,
         Cmd::Sandbox { cmd, dir, writable } => {
             let dir = dir.canonicalize()?;
             eprintln!("[sandbox] {}", autoresolve_core::sandbox::describe());

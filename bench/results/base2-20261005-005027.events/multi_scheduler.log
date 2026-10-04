@@ -1,0 +1,170 @@
+
+2 confirmed issue(s) to fix
+
+=== [HIGH] scheduler.py:8  ZeroDivisionError in average_wait ===
+regression test: Test that average_wait returns 0.0 for an empty list instead of raising ZeroDivisionError. (fails on the current code, as it should)
+behavior guard: Ensure that average_wait calculates the mean of a non-empty list correctly. (passes on the current code)
+Fix ZeroDivisionError in average_wait when waits list is empty.
+--- a/scheduler.py
++++ b/scheduler.py
+@@ -6,4 +6,6 @@
+ def average_wait(waits):
+     """Return the mean waiting time, or 0.0 when nobody waited."""
++    if not waits:
++        return 0.0
+     return sum(waits) / len(waits)
+ 
+--- a/autoresolve_regression/test_0_zerodivisionerror_in_average_wait.py
++++ b/autoresolve_regression/test_0_zerodivisionerror_in_average_wait.py
+@@ -0,0 +1,8 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from scheduler import average_wait
++
++waits = []
++result = average_wait(waits)
++assert result == 0.0, f"Expected 0.0, got {result}"
+  [PASS] syntax scheduler.py 
+  [PASS] no new anti-patterns scheduler.py 0 -> 0 findings
+  [PASS] lint, security and types scheduler.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import scheduler'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The patch correctly addresses the ZeroDivisionError by checking if the list is empty before dividing. It returns 0.0 as implied by the docstring. It does not introduce any unrelated changes.
+  -> PROVEN: the regression test fails before the patch and passes after
+
+=== [HIGH] scheduler.py:3  Potential IndexError in pick_slot ===
+could not reproduce the bug with a test (could not write a test that fails on the current code); the fix will be unproven
+behavior guard: Verifies that pick_slot correctly retrieves slots for valid hour indices (1, 2, 3) using the expected 1-based indexing logic. (passes on the current code)
+Add validation to pick_slot to ensure 'hour' is within the bounds of 'slots', returning None if it is out of bounds to avoid IndexError.
+--- a/scheduler.py
++++ b/scheduler.py
+@@ -1,4 +1,6 @@
+ def pick_slot(slots, hour):
+     """Return the slot for the given hour, where hour 0 is the first slot."""
++    if not (1 <= hour <= len(slots)):
++        return None
+     return slots[hour - 1]
+ 
+  [PASS] syntax scheduler.py 
+  [PASS] no new anti-patterns scheduler.py 0 -> 0 findings
+  [PASS] lint, security and types scheduler.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] tests `python3 -c 'import scheduler'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The patch adds a bounds check to prevent an IndexError when accessing the slots list, which correctly addresses the reported bug. It does not introduce unrelated changes and correctly returns None for invalid input, preserving existing behavior for valid input.
+  -> a behavior guard confirmed ordinary use still works, but the bug itself is not proven fixed.
+  -> UNPROVEN SUGGESTION: it passed the static checks and the patch review, but no regression test
+     fails before it and passes after it. It is saved in the plan, not stacked on later fixes, and
+     `apply-plan` skips it unless you pass --include-unproven. Read the diff yourself first.
+
+2/2 fixes verified, 1 proven by a regression test (1 unproven suggestion(s)), 0 resolved by earlier fixes
+plan saved to /tmp/bench-multi_scheduler-c0goxpmh/.autoresolve/plan.json (1 proven fix(es), 1 unproven suggestion(s)). Review it, then apply the proven ones with:
+  cargo run -p autoresolve-cli -- apply-plan
+[sandbox] docker, image autoresolve-sandbox, no network, 1 cpu, 512 MB, read-only root filesystem
+[policy] max 3 file(s) and 40 changed line(s) per patch; .git/, .autoresolve/, policy.toml and saved tests are protected
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":13,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] static_findings({"file":"scheduler.py"})
+[waiting for gemini-3.1-flash-lite ...]
+[reviewer] proposed 2 issue(s); handing to the skeptic
+[skeptic] challenging: ZeroDivisionError in average_wait
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":9,"file":"scheduler.py","start":6})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"average_wait"})
+[waiting for gemini-3.1-flash-lite ...]
+[skeptic] challenging: Potential IndexError in pick_slot
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":5,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"pick_slot"})
+[waiting for gemini-3.1-flash-lite ...]
+[step 4] read_lines({"end":15,"file":"scheduler.py","start":6})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":9,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 40s (attempt 1/4)
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":9,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":10,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":10,"file":"scheduler.py","start":6})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"average_wait"})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":5,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":5,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 15s (attempt 1/4)
+[repro] attempt 1 rejected: your test PASSED on the current buggy code; it must fail there. A regression test asserts the CORRECT behavior, so it fails while the bug exists and passes once it is fixed. For a vulnerability or an unwanted side effect, do not assert that the exploit works: assert that the harmful effect does NOT happen
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":5,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[repro] attempt 2 rejected: your test fails, but not the way the bug claim predicts. You said it would fail with `AssertionError: Expected 'a' for hour 0, but got 'c'`, but it failed with: AssertionError: Expected 'a' for hour 0, but got c
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":5,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"pick_slot"})
+[waiting for gemini-3.1-flash-lite ...]
+[step 4] get_callers({"name":"average_wait"})
+[waiting for gemini-3.1-flash-lite ...]
+[step 5] get_callers({"name":"normalize_name"})
+[waiting for gemini-3.1-flash-lite ...]
+[fix] attempt 1 failed verification, retrying with feedback
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 19s (attempt 1/4)
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] read_lines({"end":15,"file":"scheduler.py","start":6})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"scheduler.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] get_callers({"name":"pick_slot"})
+[waiting for gemini-3.1-flash-lite ...]
+[usage] 30 model calls (reviewer/skeptic/patch gate) + 25 (tester/fixer)

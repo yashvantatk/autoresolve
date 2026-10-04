@@ -1,0 +1,109 @@
+
+3 confirmed issue(s) to fix
+
+=== [HIGH] textstats.py:5  Incorrect word frequency calculation ===
+regression test: Test that word_freq correctly counts multiple occurrences of a word. (fails on the current code, as it should)
+behavior guard: Verify that word_freq correctly identifies individual words in a string, even if it currently incorrectly reports their counts as 1. (passes on the current code)
+Fix word frequency calculation to correctly increment counts instead of resetting them.
+--- a/textstats.py
++++ b/textstats.py
+@@ -3,5 +3,5 @@
+     counts = {}
+     for word in text.lower().split():
+-        counts[word] = 1
++        counts[word] = counts.get(word, 0) + 1
+     return counts
+ 
+--- a/autoresolve_regression/test_0_incorrect_word_frequency_calculation.py
++++ b/autoresolve_regression/test_0_incorrect_word_frequency_calculation.py
+@@ -0,0 +1,10 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from textstats import word_freq
++
++text = "apple apple banana"
++result = word_freq(text)
++
++expected = {"apple": 2, "banana": 1}
++assert result == expected, f"Expected {expected}, but got {result}"
+  [PASS] syntax textstats.py 
+  [PASS] no new anti-patterns textstats.py 0 -> 0 findings
+  [PASS] lint, security and types textstats.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import textstats'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The patch correctly fixes the logic for word frequency counting by incrementing the count instead of resetting it to 1. The change is minimal and addresses the claimed bug without affecting other functions.
+  -> PROVEN: the regression test fails before the patch and passes after
+
+=== [HIGH] textstats.py:14  Incorrect logic for finding longest word ===
+regression test: Test that longest_word returns the longest word instead of the shortest. (fails on the current code, as it should)
+behavior guard: Verify that longest_word returns the first word when all words in the input have the same length, which is expected behavior that holds regardless of whether min or max is used. (passes on the current code)
+[sandbox] docker, image autoresolve-sandbox, no network, 1 cpu, 512 MB, read-only root filesystem
+[policy] max 3 file(s) and 40 changed line(s) per patch; .git/, .autoresolve/, policy.toml and saved tests are protected
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] read_lines({"end":200,"file":"textstats.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[reviewer] proposed 3 issue(s); handing to the skeptic
+[skeptic] challenging: Incorrect word frequency calculation
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"textstats.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[skeptic] challenging: Incorrect logic for finding longest word
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"textstats.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[skeptic] challenging: Incorrect palindrome implementation
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":19,"file":"textstats.py","start":17})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 33s (attempt 1/4)
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"textstats.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"textstats.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"textstats.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":20,"file":"textstats.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":14,"file":"textstats.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 429 Too Many Requests, waiting 29s (attempt 1/4)
+[step 2] read_lines({"end":14,"file":"textstats.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"textstats.py","start":8})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"textstats.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+Error: QUOTA_EXHAUSTED: the daily request quota for gemini-3.1-flash-lite is used up. It usually resets at midnight Pacific time. Meanwhile set AUTORESOLVE_MODEL to another model (each model has its own quota), or use AUTORESOLVE_PROVIDER=ollama.

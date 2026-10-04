@@ -1,0 +1,33 @@
+{
+  "items": [
+    {
+      "title": "ZeroDivisionError in average_wait",
+      "summary": "Fix ZeroDivisionError in average_wait when waits list is empty.",
+      "proven": true,
+      "edits": [
+        {
+          "file": "scheduler.py",
+          "search": "def average_wait(waits):\n    \"\"\"Return the mean waiting time, or 0.0 when nobody waited.\"\"\"\n    return sum(waits) / len(waits)",
+          "replace": "def average_wait(waits):\n    \"\"\"Return the mean waiting time, or 0.0 when nobody waited.\"\"\"\n    if not waits:\n        return 0.0\n    return sum(waits) / len(waits)"
+        }
+      ],
+      "test": [
+        "autoresolve_regression/test_0_zerodivisionerror_in_average_wait.py",
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\nfrom scheduler import average_wait\n\nwaits = []\nresult = average_wait(waits)\nassert result == 0.0, f\"Expected 0.0, got {result}\"\n"
+      ]
+    },
+    {
+      "title": "Potential IndexError in pick_slot",
+      "summary": "Add validation to pick_slot to ensure 'hour' is within the bounds of 'slots', returning None if it is out of bounds to avoid IndexError.",
+      "proven": false,
+      "edits": [
+        {
+          "file": "scheduler.py",
+          "search": "def pick_slot(slots, hour):\n    \"\"\"Return the slot for the given hour, where hour 0 is the first slot.\"\"\"\n    return slots[hour - 1]",
+          "replace": "def pick_slot(slots, hour):\n    \"\"\"Return the slot for the given hour, where hour 0 is the first slot.\"\"\"\n    if not (1 <= hour <= len(slots)):\n        return None\n    return slots[hour - 1]"
+        }
+      ],
+      "test": null
+    }
+  ]
+}

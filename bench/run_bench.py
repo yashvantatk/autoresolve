@@ -213,7 +213,7 @@ def summarize(rows):
         "cases fully detected": pct(sum(1 for r in bug if r["detected"]), n),
         "strict pass@1 (proven fixes only)": pct(sum(1 for r in bug if r["oracle_proven_only"]), n),
         "lenient pass@1 (with unproven)": pct(sum(1 for r in bug if r["oracle_with_unproven"]), n),
-        "false trust (proven but wrong)": sum(1 for r in bug if r["proven"] > 0 and not r["oracle_proven_only"]),
+        "false trust (proven but wrong)": sum(max(0, r["proven"] - r.get("bugs_fixed_proven_only", 1 if r["oracle_proven_only"] else 0)) for r in bug),
         "unproven correct": pct(sum(1 for r in unproven if r["oracle_with_unproven"]), len(unproven)),
         "clean controls": len(clean),
         "false alarms (clean code)": sum(1 for r in clean if r["confirmed"] > 0),

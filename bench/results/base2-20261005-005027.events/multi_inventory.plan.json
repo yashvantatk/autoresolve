@@ -1,0 +1,52 @@
+{
+  "items": [
+    {
+      "title": "Incorrect price calculation formula",
+      "summary": "Fix incorrect total price calculation formula by changing addition to multiplication.",
+      "proven": true,
+      "edits": [
+        {
+          "file": "inventory.py",
+          "search": "        total += price + quantity",
+          "replace": "        total += price * quantity"
+        }
+      ],
+      "test": [
+        "autoresolve_regression/test_0_incorrect_price_calculation_formula.py",
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\nfrom inventory import total_price\n\nitems = [\n    (\"apple\", 10, 2), # 10 * 2 = 20\n    (\"banana\", 5, 3)  # 5 * 3 = 15\n]\n\nassert total_price(items) == 35, f\"Expected 35, got {total_price(items)}\"\n"
+      ]
+    },
+    {
+      "title": "Incorrect loop termination in find_item",
+      "summary": "Move the `return None` statement outside of the `for` loop to fix incorrect loop termination in `find_item`.",
+      "proven": true,
+      "edits": [
+        {
+          "file": "inventory.py",
+          "search": "    for item in items:\n        if item[0] == name:\n            return item\n        return None",
+          "replace": "    for item in items:\n        if item[0] == name:\n            return item\n    return None"
+        }
+      ],
+      "test": [
+        "autoresolve_regression/test_1_incorrect_loop_termination_in_find_item.py",
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\nfrom inventory import find_item\n\nitems = [(\"apple\", 1, 10), (\"banana\", 2, 5)]\nresult = find_item(items, \"banana\")\n\nassert result == (\"banana\", 2, 5), f\"Expected ('banana', 2, 5), but got {result}\"\n"
+      ]
+    },
+    {
+      "title": "Incorrect sorting order in top_n",
+      "summary": "Change top_n to return the n largest values by sorting in descending order.",
+      "proven": true,
+      "edits": [
+        {
+          "file": "inventory.py",
+          "search": "    return sorted(values)[:n]",
+          "replace": "    return sorted(values, reverse=True)[:n]"
+        }
+      ],
+      "test": [
+        "autoresolve_regression/test_2_incorrect_sorting_order_in_top_n.py",
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\nfrom inventory import top_n\n\nvalues = [1, 2, 3, 4, 5]\nn = 3\nresult = top_n(values, n)\nexpected = [5, 4, 3]\n\nassert result == expected, f\"Expected {expected}, but got {result}\"\n"
+      ]
+    }
+  ]
+}

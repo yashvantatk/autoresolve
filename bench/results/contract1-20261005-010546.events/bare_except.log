@@ -1,0 +1,6 @@
+[sandbox] docker, image autoresolve-sandbox, no network, 1 cpu, 512 MB, read-only root filesystem
+[policy] max 3 file(s) and 40 changed line(s) per patch; .git/, .autoresolve/, policy.toml and saved tests are protected
+[reviewer] static scanner found candidates:
+- line 5: [PY002-bare-except] bare `except:` also catches KeyboardInterrupt/SystemExit; catch a specific exception
+[waiting for gemini-3.1-flash-lite ...]
+Error: QUOTA_EXHAUSTED: the daily request quota for gemini-3.1-flash-lite is used up. It usually resets at midnight Pacific time. Meanwhile set AUTORESOLVE_MODEL to another model (each model has its own quota), or use AUTORESOLVE_PROVIDER=ollama.
