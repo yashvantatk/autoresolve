@@ -1,0 +1,11 @@
+{
+  "id": "mutable_default_visible",
+  "file": "tagging.py",
+  "category": "mutable_default",
+  "observable": true,
+  "bug_lines": [
+    1
+  ],
+  "test_cmd": "python3 -c 'import tagging'",
+  "note": ""
+}

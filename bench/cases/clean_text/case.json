@@ -1,0 +1,9 @@
+{
+  "id": "clean_text",
+  "file": "textutil.py",
+  "category": "clean_control",
+  "observable": true,
+  "bug_lines": [],
+  "test_cmd": "python3 -c 'import textutil'",
+  "note": ""
+}

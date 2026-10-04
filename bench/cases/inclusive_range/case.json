@@ -1,0 +1,11 @@
+{
+  "id": "inclusive_range",
+  "file": "sums.py",
+  "category": "off_by_one",
+  "observable": true,
+  "bug_lines": [
+    4
+  ],
+  "test_cmd": "python3 -c 'import sums'",
+  "note": ""
+}

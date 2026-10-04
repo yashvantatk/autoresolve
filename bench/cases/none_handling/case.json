@@ -1,0 +1,11 @@
+{
+  "id": "none_handling",
+  "file": "users.py",
+  "category": "none_handling",
+  "observable": true,
+  "bug_lines": [
+    10
+  ],
+  "test_cmd": "python3 -c 'import users'",
+  "note": ""
+}

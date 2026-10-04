@@ -1,0 +1,11 @@
+{
+  "id": "dict_mutation",
+  "file": "cleanup.py",
+  "category": "runtime_error",
+  "observable": true,
+  "bug_lines": [
+    3
+  ],
+  "test_cmd": "python3 -c 'import cleanup'",
+  "note": ""
+}

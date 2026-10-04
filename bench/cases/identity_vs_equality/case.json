@@ -1,0 +1,11 @@
+{
+  "id": "identity_vs_equality",
+  "file": "status.py",
+  "category": "identity_vs_equality",
+  "observable": true,
+  "bug_lines": [
+    3
+  ],
+  "test_cmd": "python3 -c 'import status'",
+  "note": ""
+}

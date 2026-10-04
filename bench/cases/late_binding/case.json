@@ -1,0 +1,11 @@
+{
+  "id": "late_binding",
+  "file": "mult.py",
+  "category": "closure",
+  "observable": true,
+  "bug_lines": [
+    3
+  ],
+  "test_cmd": "python3 -c 'import mult'",
+  "note": ""
+}

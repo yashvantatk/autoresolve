@@ -1,0 +1,11 @@
+{
+  "id": "mutable_default_hidden",
+  "file": "journal.py",
+  "category": "unobservable",
+  "observable": false,
+  "bug_lines": [
+    1
+  ],
+  "test_cmd": "python3 -c 'import journal'",
+  "note": "the shared default list is invisible to callers"
+}

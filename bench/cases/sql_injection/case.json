@@ -1,0 +1,11 @@
+{
+  "id": "sql_injection",
+  "file": "repo.py",
+  "category": "security",
+  "observable": true,
+  "bug_lines": [
+    6
+  ],
+  "test_cmd": "python3 -c 'import repo'",
+  "note": ""
+}

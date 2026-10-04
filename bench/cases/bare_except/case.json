@@ -1,0 +1,11 @@
+{
+  "id": "bare_except",
+  "file": "parsing.py",
+  "category": "error_handling",
+  "observable": true,
+  "bug_lines": [
+    5
+  ],
+  "test_cmd": "python3 -c 'import parsing'",
+  "note": ""
+}

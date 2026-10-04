@@ -1,0 +1,11 @@
+{
+  "id": "wrong_operator",
+  "file": "age.py",
+  "category": "wrong_operator",
+  "observable": true,
+  "bug_lines": [
+    3
+  ],
+  "test_cmd": "python3 -c 'import age'",
+  "note": ""
+}

@@ -1,0 +1,11 @@
+{
+  "id": "shell_injection",
+  "file": "runner.py",
+  "category": "security_hard",
+  "observable": true,
+  "bug_lines": [
+    6
+  ],
+  "test_cmd": "python3 -c 'import runner'",
+  "note": ""
+}

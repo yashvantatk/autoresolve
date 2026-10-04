@@ -1,0 +1,11 @@
+{
+  "id": "division_by_zero",
+  "file": "stats.py",
+  "category": "edge_case",
+  "observable": true,
+  "bug_lines": [
+    3
+  ],
+  "test_cmd": "python3 -c 'import stats'",
+  "note": ""
+}

@@ -570,8 +570,10 @@ code still contain the problem the claim describes (a vulnerability that is stil
 can still happen, state that is still shared)? Replacing one unsafe call with another equally unsafe call, \
 for example os.popen(cmd) with subprocess.run(cmd, shell=True), leaves the defect in place: answer true. \
 `unrelated_changes`: does the diff change anything the claim does not require? `changes_normal_behavior`: \
-walk through one concrete ORDINARY call (for example a harmless input such as the string 'echo hello'): would \
-the patched code now behave differently from the original for ordinary valid input, for example a call that \
+walk through one concrete ORDINARY call (for example a harmless input such as the string 'echo hello') that is \
+NOT the input the bug claim is about. The fix is allowed, and expected, to change the behavior for the inputs \
+the claim describes (an age of exactly 18, an empty list); only a change for other, ordinary input counts. Would \
+the patched code now behave differently there from the original, for example a call that \
 used to return a result now raising? (subprocess.check_output('echo hello', shell=False) raises, because a \
 string is then taken as the program name.) Never approve because a patch is small or because it acknowledges \
 the issue; judge only whether the defect is gone and nothing else changed. If your own reasoning says the \

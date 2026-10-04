@@ -1,0 +1,11 @@
+{
+  "id": "slice_last_n",
+  "file": "listutil.py",
+  "category": "off_by_one",
+  "observable": true,
+  "bug_lines": [
+    3
+  ],
+  "test_cmd": "python3 -c 'import listutil'",
+  "note": ""
+}
