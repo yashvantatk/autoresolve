@@ -345,6 +345,21 @@ async fn main() -> Result<()> {
                         }
                     };
 
+                    // behavior guard: a test of ORDINARY use that passes now and must still pass after the patch
+                    let guard = match fix::write_guard(&strong, &tools, i, &slug, max_steps).await {
+                        Ok(g) => {
+                            println!("behavior guard: {} (passes on the current code)", g.description);
+                            events::emit("guard", serde_json::json!({"ok": true, "description": g.description}));
+                            Some(g)
+                        }
+                        Err(e) if e.to_string().contains("QUOTA_EXHAUSTED") => return Err(e),
+                        Err(e) => {
+                            println!("no behavior guard ({e}); the patch will not be checked against ordinary use");
+                            events::emit("guard", serde_json::json!({"ok": false, "error": events::truncate(&e.to_string(), 300)}));
+                            None
+                        }
+                    };
+
                     // `strong` (the cheap worker) writes the patch; `provider` (the strong model) judges it
                     let attempt = fix::fix_issue(
                         &strong,
@@ -354,6 +369,7 @@ async fn main() -> Result<()> {
                         &siblings,
                         test_cmd.as_deref(),
                         repro.as_ref().map(|t| (slug.as_str(), t)),
+                        guard.as_ref().map(|g| g.code.as_str()),
                         &policy,
                         &format!("fix{n}r{round}"),
                         max_steps,
@@ -402,6 +418,15 @@ async fn main() -> Result<()> {
                                 } else {
                                     // The static checks and the gate are model-assisted and can be wrong: no fix that a
                                     // failing-then-passing test does not back is trusted, stacked or applied by default.
+                                    let guarded = o.checks.iter().any(|c| c.name.starts_with("behavior guard") && c.passed);
+                                    println!(
+                                        "  -> {}",
+                                        if guarded {
+                                            "a behavior guard confirmed ordinary use still works, but the bug itself is not proven fixed."
+                                        } else {
+                                            "no behavior guard backs this patch either."
+                                        }
+                                    );
                                     println!("  -> UNPROVEN SUGGESTION: it passed the static checks and the patch review, but no regression test");
                                     println!("     fails before it and passes after it. It is saved in the plan, not stacked on later fixes, and");
                                     println!("     `apply-plan` skips it unless you pass --include-unproven. Read the diff yourself first.");

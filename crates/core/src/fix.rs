@@ -128,6 +128,80 @@ pass` and assert ONLY on the side effect afterwards (this is the one allowed use
 any side-effect file inside a `tempfile.TemporaryDirectory()` and use absolute paths, because the repo \
 directory may be read-only.";
 
+const GUARD_SYSTEM: &str = "You write a BEHAVIOR GUARD: a minimal standalone Python script that checks the \
+code around a bug still works for ordinary, legitimate use. It must PASS on the current code and keep passing \
+after any correct fix of the described bug. Pick the function or class the bug claim is about, call it the way \
+a normal caller would with ordinary valid input (for example a harmless command such as `echo hello`, a short \
+list, a typical string), and assert the ordinary result exactly (the output or return value). Do NOT exercise the \
+bug itself: no malicious or empty or edge-case input, nothing that currently fails, nothing a correct fix may \
+change. Rules: plain asserts, no third-party packages; import the REAL code normally (the repo root is already \
+on sys.path) and never copy it into the script; deterministic, no network; do not inspect the implementation \
+(no `__defaults__`, `inspect`, `ast`, or reading source files); no commentary. Read the code first with the \
+tools, then call submit_guard.";
+
+fn submit_guard_spec() -> ToolSpec {
+    ToolSpec {
+        name: "submit_guard",
+        description: "Submit the behavior guard script. Call exactly once when done.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "One sentence: which ordinary behavior the guard checks."},
+                "code": {"type": "string", "description": "Complete Python source of the script."}
+            },
+            "required": ["description", "code"]
+        }),
+    }
+}
+
+/// A test of ORDINARY behavior that passes on the current code. After a patch it must still pass:
+/// a patch that breaks normal use (for example a call that now raises) is caught by running it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardTest {
+    pub description: String,
+    pub code: String,
+}
+
+/// Get a behavior guard that really passes on the current (stacked) code. One retry with feedback.
+pub async fn write_guard(
+    provider: &dyn Provider,
+    tools: &Tools<'_>,
+    issue: &Issue,
+    slug: &str,
+    max_steps: usize,
+) -> Result<GuardTest> {
+    let root = tools.root();
+    let mut feedback = String::new();
+    for attempt in 1..=2 {
+        let mut specs = Tools::specs();
+        specs.push(submit_guard_spec());
+        let mut task = format!(
+            "Write a behavior guard for the code around this confirmed bug. Do NOT test the bug itself:\n{}:{} [{}] {}\n{}",
+            issue.file, issue.line, issue.severity, issue.title, issue.explanation
+        );
+        if !feedback.is_empty() {
+            task.push_str(&format!("\n\nYour previous guard was rejected:\n{feedback}"));
+        }
+        let out = crate::events::scope("guard", run_agent(provider, tools, GUARD_SYSTEM, &task, specs, "submit_guard", max_steps)).await?;
+        let mut g: GuardTest = serde_json::from_value(out).context("model returned a malformed guard")?;
+        g.code = clean_test_code(&g.code);
+        if let Some(why) = inspects_implementation(&g.code) {
+            feedback = format!("your guard inspects the implementation (`{why}`); call the code like a normal caller instead");
+            eprintln!("[guard] attempt {attempt} rejected: {feedback}");
+            continue;
+        }
+        let sandbox = create_sandbox(root, &format!("{slug}-guard{attempt}"))?;
+        let (rel, _) = write_test(&sandbox, &format!("{slug}-guard"), &g.code)?;
+        let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
+        if ok {
+            return Ok(g);
+        }
+        feedback = format!("it must PASS on the current code, but it failed:\n{tail}");
+        eprintln!("[guard] attempt {attempt} rejected: the guard fails on the current code");
+    }
+    bail!("could not write a guard that passes on the current code")
+}
+
 fn submit_test_spec() -> ToolSpec {
     ToolSpec {
         name: "submit_test",
@@ -491,9 +565,13 @@ claimed bug. Answer two questions when you call submit_verdict. `still_has_defec
 code still contain the problem the claim describes (a vulnerability that is still exploitable, a crash that \
 can still happen, state that is still shared)? Replacing one unsafe call with another equally unsafe call, \
 for example os.popen(cmd) with subprocess.run(cmd, shell=True), leaves the defect in place: answer true. \
-`unrelated_changes`: does the diff change anything the claim does not require? Never approve because a \
-patch is small or because it acknowledges the issue; judge only whether the defect is gone and nothing else \
-changed. If your own reasoning says the defect remains, still_has_defect must be true.";
+`unrelated_changes`: does the diff change anything the claim does not require? `changes_normal_behavior`: \
+walk through one concrete ORDINARY call (for example a harmless input such as the string 'echo hello'): would \
+the patched code now behave differently from the original for ordinary valid input, for example a call that \
+used to return a result now raising? (subprocess.check_output('echo hello', shell=False) raises, because a \
+string is then taken as the program name.) Never approve because a patch is small or because it acknowledges \
+the issue; judge only whether the defect is gone and nothing else changed. If your own reasoning says the \
+defect remains, still_has_defect must be true.";
 
 /// What the patch gate must answer. The accept/reject decision is made in code from these two
 /// booleans, so a verdict can never contradict the reasoning written next to it.
@@ -506,9 +584,10 @@ fn submit_gate_spec() -> ToolSpec {
             "properties": {
                 "still_has_defect": {"type": "boolean", "description": "true if the patched code still contains the problem the claim describes"},
                 "unrelated_changes": {"type": "boolean", "description": "true if the diff changes anything the claim does not require"},
-                "reason": {"type": "string", "description": "one or two sentences justifying both answers"}
+                "changes_normal_behavior": {"type": "boolean", "description": "true if ordinary valid input now behaves differently from the original (for example raises)"},
+                "reason": {"type": "string", "description": "one or two sentences justifying the answers"}
             },
-            "required": ["still_has_defect", "unrelated_changes", "reason"]
+            "required": ["still_has_defect", "unrelated_changes", "changes_normal_behavior", "reason"]
         }),
     }
 }
@@ -517,18 +596,27 @@ fn submit_gate_spec() -> ToolSpec {
 struct GateAnswer {
     still_has_defect: bool,
     unrelated_changes: bool,
+    changes_normal_behavior: bool,
     reason: String,
 }
 
-/// Accept only if the defect is gone AND nothing unrelated changed.
+/// Accept only if the defect is gone, nothing unrelated changed, and ordinary use is unchanged.
 fn gate_decision(a: GateAnswer) -> Verdict {
-    let (verdict, tag) = match (a.still_has_defect, a.unrelated_changes) {
-        (false, false) => ("confirmed", ""),
-        (true, false) => ("refuted", "[the defect is still present] "),
-        (false, true) => ("refuted", "[unrelated changes] "),
-        (true, true) => ("refuted", "[the defect is still present, and unrelated changes] "),
-    };
-    Verdict { verdict: verdict.into(), reason: format!("{tag}{}", a.reason) }
+    let mut problems = Vec::new();
+    if a.still_has_defect {
+        problems.push("the defect is still present");
+    }
+    if a.unrelated_changes {
+        problems.push("unrelated changes");
+    }
+    if a.changes_normal_behavior {
+        problems.push("ordinary use now behaves differently");
+    }
+    if problems.is_empty() {
+        Verdict { verdict: "confirmed".into(), reason: a.reason }
+    } else {
+        Verdict { verdict: "refuted".into(), reason: format!("[{}] {}", problems.join("; "), a.reason) }
+    }
 }
 
 pub async fn review_patch(
@@ -608,6 +696,7 @@ pub async fn fix_issue(
     siblings: &[Issue],
     test_cmd: Option<&str>,
     repro: Option<(&str, &ReproTest)>,
+    guard: Option<&str>,
     policy: &Policy,
     id: &str,
     max_steps: usize,
@@ -649,6 +738,11 @@ pub async fn fix_issue(
             task.push_str(&format!(
                 "\n\nA regression test for this bug exists and will be added to the repo automatically; it must pass after your fix. Edit ONLY existing source files, never create or edit test files:\n{}",
                 t.code
+            ));
+        }
+        if let Some(code) = guard {
+            task.push_str(&format!(
+                "\n\nA behavior guard test will also run against your patched code. It checks that ordinary use still works, and it must keep passing:\n{code}"
             ));
         }
         if !others.is_empty() {
@@ -706,6 +800,17 @@ pub async fn fix_issue(
                 name: format!("tests `{cmd}`"),
                 passed: ok,
                 detail: if ok { format!("(baseline: {base})") } else { format!("(baseline: {base}) {tail}") },
+            });
+        }
+
+        // Behavior guard: a test of ordinary use that passed on the original code must still pass.
+        if let Some(code) = guard {
+            let (rel, _) = write_test(&sandbox, &format!("{}-guard", slug.unwrap_or(id)), code)?;
+            let (ok, tail) = run_tests(&sandbox, &format!("python3 {rel}"));
+            checks.push(Check {
+                name: "behavior guard (ordinary use still works)".into(),
+                passed: ok,
+                detail: if ok { "passes before and after the patch".into() } else { tail },
             });
         }
 
@@ -972,11 +1077,119 @@ mod tests {
 
     #[test]
     fn the_gate_cannot_approve_a_patch_that_leaves_the_defect_in_place() {
-        let v = |still, unrelated| gate_decision(GateAnswer { still_has_defect: still, unrelated_changes: unrelated, reason: "r".into() });
-        assert_eq!(v(false, false).verdict, "confirmed");
-        for (still, unrelated) in [(true, false), (false, true), (true, true)] {
-            assert_eq!(v(still, unrelated).verdict, "refuted");
+        let v = |still, unrelated, normal| {
+            gate_decision(GateAnswer {
+                still_has_defect: still,
+                unrelated_changes: unrelated,
+                changes_normal_behavior: normal,
+                reason: "r".into(),
+            })
+        };
+        assert_eq!(v(false, false, false).verdict, "confirmed");
+        for (a, b, c) in [(true, false, false), (false, true, false), (false, false, true), (true, true, true)] {
+            assert_eq!(v(a, b, c).verdict, "refuted");
         }
-        assert!(v(true, false).reason.contains("still present"));
+        assert!(v(true, false, false).reason.contains("still present"));
+        assert!(v(false, false, true).reason.contains("ordinary use"));
+    }
+
+    // ---- end-to-end with a scripted model: no network, no API key ----
+    use crate::agent::Tools;
+    use serde_json::Value;
+    use crate::graph::Graph;
+    use crate::llm::{Message, ModelTurn, ToolCall};
+    use async_trait::async_trait;
+
+    /// Answers every agent with canned arguments: first one tool call, then the terminal tool.
+    struct Scripted {
+        patch: Value,
+        guard: String,
+    }
+
+    #[async_trait]
+    impl Provider for Scripted {
+        async fn complete(&self, _s: &str, history: &[Message], tools: &[ToolSpec]) -> Result<ModelTurn> {
+            let looked = history.iter().any(|m| matches!(m, Message::ToolResults(_)));
+            let call = if !looked {
+                ToolCall { name: "list_symbols".into(), args: json!({}) }
+            } else {
+                let terminal = tools.iter().map(|t| t.name).find(|n| n.starts_with("submit_")).unwrap();
+                let args = match terminal {
+                    "submit_patch" => self.patch.clone(),
+                    "submit_guard" => json!({"description": "echo works", "code": self.guard}),
+                    // a careless gate that approves everything
+                    "submit_verdict" => json!({"still_has_defect": false, "unrelated_changes": false, "changes_normal_behavior": false, "reason": "looks fine"}),
+                    other => panic!("unexpected terminal tool {other}"),
+                };
+                ToolCall { name: terminal.into(), args }
+            };
+            Ok(ModelTurn { text: String::new(), calls: vec![call], raw: json!({}) })
+        }
+    }
+
+    const ORIGINAL: &str = "import os\n\ndef run(cmd):\n    return os.popen(cmd).read()\n";
+    const GUARD: &str = "from m import run\nassert run('echo hi') == 'hi\\n'\n";
+
+    fn patch_to(replace: &str) -> Value {
+        json!({"summary": "stop using the shell", "edits": [{
+            "file": "m.py",
+            "search": "import os\n\ndef run(cmd):\n    return os.popen(cmd).read()",
+            "replace": replace
+        }]})
+    }
+
+    fn issue() -> Issue {
+        Issue {
+            severity: "high".into(),
+            file: "m.py".into(),
+            line: 4,
+            title: "shell injection".into(),
+            explanation: "cmd goes through a shell".into(),
+            fix: "do not use a shell".into(),
+        }
+    }
+
+    async fn run_flow(name: &str, patch: Value, guard: &str) -> Outcome {
+        unsafe { std::env::set_var("AUTORESOLVE_SANDBOX", "local") };
+        let d = tmp(name); // a distinct directory per test: tests run in parallel
+        std::fs::write(d.join("m.py"), ORIGINAL).unwrap();
+        let graph = Graph::open(Path::new(":memory:")).unwrap();
+        let tools = Tools::new(&graph, &d).unwrap();
+        let model = Scripted { patch, guard: guard.into() };
+        let g = write_guard(&model, &tools, &issue(), "g", 5).await.unwrap();
+        fix_issue(&model, &model, &tools, &issue(), &[], None, None, Some(&g.code), &Policy::default(), "t", 5)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_behavior_guard_rejects_a_patch_that_breaks_ordinary_use_even_when_the_gate_approves() {
+        // the patch the gate wrongly approved in a real run: a string is taken as the program name
+        let bad = patch_to("import subprocess\n\ndef run(cmd):\n    return subprocess.check_output(cmd, shell=False).decode()");
+        let out = run_flow("guardflow-bad", bad, GUARD).await;
+        assert!(!out.verified, "a patch that makes run('echo hi') raise must not verify");
+        let failed: Vec<_> = out.checks.iter().filter(|c| !c.passed).collect();
+        assert!(failed.iter().any(|c| c.name.starts_with("behavior guard")), "failed checks: {failed:?}");
+    }
+
+    #[tokio::test]
+    async fn the_behavior_guard_passes_a_correct_fix() {
+        let good = patch_to(
+            "import shlex\nimport subprocess\n\ndef run(cmd):\n    return subprocess.check_output(shlex.split(cmd)).decode()",
+        );
+        let out = run_flow("guardflow-good", good, GUARD).await;
+        assert!(out.verified, "checks: {:?}", out.checks);
+        assert!(!out.proven); // no regression test was supplied, so it stays an unproven suggestion
+    }
+
+    #[tokio::test]
+    async fn a_guard_that_fails_on_the_current_code_is_never_accepted() {
+        unsafe { std::env::set_var("AUTORESOLVE_SANDBOX", "local") };
+        let d = tmp("badguard");
+        std::fs::write(d.join("m.py"), ORIGINAL).unwrap();
+        let graph = Graph::open(Path::new(":memory:")).unwrap();
+        let tools = Tools::new(&graph, &d).unwrap();
+        let model = Scripted { patch: json!({}), guard: "from m import run\nassert run('echo hi') == 'WRONG'\n".into() };
+        assert!(write_guard(&model, &tools, &issue(), "g", 5).await.is_err());
     }
 }
