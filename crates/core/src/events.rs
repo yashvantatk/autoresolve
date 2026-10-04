@@ -243,6 +243,14 @@ pub fn summarize(events: &[Event]) -> String {
             fmt_ms(waits.iter().sum::<u64>() * 1000)
         ));
     }
+    let paced: Vec<u64> = events.iter().filter(|e| e.kind == "paced").map(|e| e.data["wait_ms"].as_u64().unwrap_or(0)).collect();
+    if !paced.is_empty() {
+        out.push_str(&format!(
+            "paced to stay under the per-minute limit: {} waits, {} total\n",
+            paced.len(),
+            fmt_ms(paced.iter().sum())
+        ));
+    }
     if let Some(e) = end {
         let d = &e.data;
         out.push_str(&format!(
@@ -311,6 +319,7 @@ mod tests {
             turn("fixer", 90_000, vec!["submit_patch"]),
             ev("r", "controller", "check", json!({"name": "x", "passed": false})),
             ev("r", "fixer", "terminal_forced", json!({})),
+            ev("r", "reviewer", "paced", json!({"wait_ms": 4000})),
             ev("r", "reviewer", "retry", json!({"wait_s": 47, "reason": 429})),
             ev("r", "fixer", "retry", json!({"wait_s": 60, "reason": 429})),
             ev("r", "controller", "run_end", json!({"verified": 1, "confirmed": 2, "proven": 1, "resolved_earlier": 0, "calls_main": 3, "calls_worker": 1})),
@@ -325,6 +334,7 @@ mod tests {
         assert!(text.contains("forced structured outputs: 1"));
         assert!(text.contains("1/2 verified, 1 proven"));
         assert!(text.contains("2 retries, 1m47s total"));
+        assert!(text.contains("1 waits, 4s total"));
         assert!(!text.contains("ollama=")); // not used in this run
     }
 

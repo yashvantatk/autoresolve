@@ -97,6 +97,32 @@ impl Gemini {
     }
 }
 
+/// Client-side pacing for per-minute limits. `AUTORESOLVE_RPM=12` spaces requests to one model at
+/// least 5 s apart, shared by every role that uses that model. Waiting a steady few seconds beats
+/// being refused with a 429 and sitting out 20 to 60 s (and refused requests may still count
+/// against the daily quota). Unset or 0 means no pacing.
+fn reserve_slot(model: &str, gap: std::time::Duration) -> std::time::Duration {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    static NEXT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let mut map = NEXT.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    let now = Instant::now();
+    let slot = map.get(model).copied().map(|t| t.max(now)).unwrap_or(now);
+    map.insert(model.to_string(), slot + gap); // the next caller waits for this one's turn too
+    slot - now
+}
+
+async fn pace(model: &str) {
+    let rpm = std::env::var("AUTORESOLVE_RPM").ok().and_then(|v| v.parse::<f64>().ok()).filter(|r| *r > 0.0);
+    let Some(rpm) = rpm else { return };
+    let wait = reserve_slot(model, std::time::Duration::from_secs_f64(60.0 / rpm));
+    if wait >= std::time::Duration::from_millis(250) {
+        crate::events::emit("paced", json!({"wait_ms": wait.as_millis() as u64, "model": model}));
+        tokio::time::sleep(wait).await;
+    }
+}
+
 fn to_contents(history: &[Message]) -> Vec<Value> {
     history
         .iter()
@@ -144,6 +170,7 @@ impl Provider for Gemini {
         eprintln!("[waiting for {} ...]", self.model);
         let mut attempt: u32 = 0;
         let v: Value = loop {
+            pace(&self.model).await;
             let sent = self
                 .http
                 .post(&url)
@@ -410,5 +437,18 @@ mod tests {
         let v = json!({"error": {"details": [{"@type": "x"}, {"retryDelay": "13.2s"}]}});
         assert_eq!(retry_delay(&v), Some(15));
         assert_eq!(retry_delay(&json!({})), None);
+    }
+
+    #[test]
+    fn pacing_spaces_requests_to_one_model_and_keeps_models_apart() {
+        let gap = std::time::Duration::from_millis(400);
+        let first = reserve_slot("pace-test-a", gap);
+        let second = reserve_slot("pace-test-a", gap);
+        let third = reserve_slot("pace-test-a", gap);
+        assert!(first < std::time::Duration::from_millis(50)); // the first request goes straight out
+        assert!(second >= std::time::Duration::from_millis(300), "{second:?}");
+        assert!(third >= std::time::Duration::from_millis(700), "{third:?}");
+        // another model has its own budget
+        assert!(reserve_slot("pace-test-b", gap) < std::time::Duration::from_millis(50));
     }
 }
