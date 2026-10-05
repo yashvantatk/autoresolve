@@ -8,24 +8,29 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600&family=Newsreader:opsz,wght@6..72,500;6..72,700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#eef2f4;--panel:#fff;--ink:#12202a;--muted:#4d5f6b;--line:#cdd7dd;--accent:#2f5d7c;--fail:#b3261e;--failbg:#fbe9e7;--pass:#1b6e47;--passbg:#e3f3ea;--code:#f6f8f9;box-sizing:border-box}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1a21;--panel:#162630;--ink:#e6eef2;--muted:#9db0bc;--line:#2a3f4d;--accent:#7fb2d4;--fail:#ff8a80;--failbg:#3a1e1c;--pass:#6fd1a0;--passbg:#14301f;--code:#112028}}
-:root[data-theme="dark"]{--bg:#0f1a21;--panel:#162630;--ink:#e6eef2;--muted:#9db0bc;--line:#2a3f4d;--accent:#7fb2d4;--fail:#ff8a80;--failbg:#3a1e1c;--pass:#6fd1a0;--passbg:#14301f;--code:#112028}
+:root{--bg:#eef2f4;--panel:#fff;--ink:#12202a;--muted:#4d5f6b;--line:#cdd7dd;--accent:#2f5d7c;--fail:#b3261e;--failbg:#fbe9e7;--pass:#1b6e47;--passbg:#e3f3ea;--code:#f6f8f9;--ai:#8a5a00;--aibg:#fff1d6;box-sizing:border-box}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1a21;--panel:#162630;--ink:#e6eef2;--muted:#9db0bc;--line:#2a3f4d;--accent:#7fb2d4;--fail:#ff8a80;--failbg:#3a1e1c;--pass:#6fd1a0;--passbg:#14301f;--code:#112028;--ai:#f2c36b;--aibg:#3a2d10}}
+:root[data-theme="dark"]{--bg:#0f1a21;--panel:#162630;--ink:#e6eef2;--muted:#9db0bc;--line:#2a3f4d;--accent:#7fb2d4;--fail:#ff8a80;--failbg:#3a1e1c;--pass:#6fd1a0;--passbg:#14301f;--code:#112028;--ai:#f2c36b;--aibg:#3a2d10}
 *,*::before,*::after{box-sizing:inherit}
-html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px);scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 "Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
-main{max-width:860px;margin:0 auto;padding:48px 20px 80px}
-h1,h2{font-family:Newsreader,Georgia,"Times New Roman",serif;line-height:1.15;margin:0}
+main{max-width:900px;margin:0 auto;padding:48px 20px 80px}
+h1,h2,h3{font-family:Newsreader,Georgia,"Times New Roman",serif;line-height:1.15;margin:0}
 h1{font-size:clamp(2.2rem,6vw,3.6rem);font-weight:700;letter-spacing:-.01em}
-h2{font-size:1.7rem;margin-top:64px;margin-bottom:12px}
-p{max-width:68ch;margin:12px 0}
+h2{font-size:1.8rem;margin-top:72px;margin-bottom:10px}
+h3{font-size:1.2rem;margin:0 0 6px}
+p{max-width:70ch;margin:12px 0}
 .lead{font-size:1.2rem;color:var(--muted)}
 a{color:var(--accent)}
+code{font:.9em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);padding:1px 5px;border-radius:4px}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 .btns{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}
 .btn{display:inline-block;padding:11px 18px;border-radius:6px;border:1.5px solid var(--accent);color:var(--accent);text-decoration:none;font-weight:600}
 .btn.primary{background:var(--accent);color:var(--bg)}
-.demo{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin-top:28px}
+nav.jump{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:28px;font-size:.95rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin-top:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-top:20px}
+.grid .panel{margin-top:0}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
 .tabs button{font:inherit;font-weight:600;padding:8px 14px;border-radius:6px;border:1.5px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
 .tabs button[aria-selected="true"]{border-color:var(--accent);background:var(--accent);color:var(--bg)}
@@ -35,66 +40,132 @@ pre{margin:0;background:var(--code);border:1px solid var(--line);border-radius:6
 .result.pass{background:var(--passbg);color:var(--pass)}
 .result.neutral{background:var(--code);color:var(--ink);border:1px solid var(--line)}
 .note{font-size:.9rem;color:var(--muted)}
-.video{margin-top:20px;aspect-ratio:16/9;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px}
+.video{margin-top:16px;aspect-ratio:16/9;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px}
 .video iframe{width:100%;height:100%;border:0}
-ul.plain{padding-left:20px;max-width:68ch}
+ul.plain{padding-left:20px;max-width:70ch}
 ul.plain li{margin:8px 0}
-table{border-collapse:collapse;width:100%;font-size:.95rem}
-.scroll{overflow-x:auto}
+.scroll{overflow-x:auto;margin-top:16px}
+table{border-collapse:collapse;width:100%;font-size:.95rem;min-width:560px}
 th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
-footer{margin-top:64px;color:var(--muted);font-size:.9rem}
+.chip{display:inline-block;font-size:.8rem;font-weight:600;padding:2px 9px;border-radius:99px;white-space:nowrap}
+.chip.ai{background:var(--aibg);color:var(--ai)}
+.chip.code{background:var(--passbg);color:var(--pass)}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px}
+@media (max-width:640px){.split{grid-template-columns:1fr}}
+.split .panel{margin-top:0}
+.split h3 span{font-weight:400;font-size:.95rem;color:var(--muted)}
+footer{margin-top:72px;color:var(--muted);font-size:.9rem}
 @media (prefers-reduced-motion:no-preference){.result{transition:background .2s,color .2s}}
 </style>
 </head>
 <body>
 <main>
 <h1>AI proposes the fix. A failing test proves it.</h1>
-<p class="lead">AutoResolve is a Rust command-line tool that reviews Python code with AI agents and keeps only the fixes it can prove. A fix counts as proven when a generated test fails on the original code and passes after the patch, inside a locked-down Docker sandbox.</p>
+<p class="lead">AutoResolve is a Rust command-line tool that reviews Python code with AI agents, fixes the bugs it finds, and keeps only the fixes it can prove. A fix counts as proven when a generated test fails on the original code and passes after the patch, inside a locked-down Docker sandbox.</p>
 <div class="btns">
-  <a class="btn primary" href="https://github.com/yashvantatk/autoresolve">View the code</a>
-  <a class="btn" href="#video">Watch the walkthrough</a>
+  <a class="btn primary" href="#video">Watch the walkthrough</a>
+  <a class="btn" href="https://github.com/yashvantatk/autoresolve">View the code</a>
+</div>
+<nav class="jump" aria-label="Sections">
+  <a href="#problem">The problem</a><a href="#helps">How it helps</a><a href="#proof">See the proof step</a><a href="#works">How it works</a><a href="#tools">Interfaces</a><a href="#measured">Measured so far</a><a href="#limits">Limits</a>
+</nav>
+
+<h2 id="problem">The problem it solves</h2>
+<p>AI coding tools are good at proposing fixes and bad at knowing when they are wrong. The developer is left to decide whether to believe a confident patch. Failures seen while building this project:</p>
+<ul class="plain">
+  <li>A model approved both <code>shell=True</code> and a string passed with <code>shell=False</code> as "fixes" for shell injection. The second one breaks every normal call, and static checks passed both.</li>
+  <li>A model fixed a bare <code>except:</code> by catching two error types, while the docstring said other errors must propagate. The generated test only covered part of the contract, so the fix was marked proven and was still wrong.</li>
+  <li>Models write tests that can never fail, or can never pass, and then report success.</li>
+</ul>
+<p>AutoResolve's rule: no AI claim is trusted until something other than that AI checks it.</p>
+
+<h2 id="helps">How it helps a developer</h2>
+<div class="grid">
+  <div class="panel"><h3>Fix a bug you describe</h3><p><code>fix file.py --issue "bug report"</code> turns your description into a regression test plus a candidate patch. If the text names a function, its docstring becomes the contract the fix must respect.</p></div>
+  <div class="panel"><h3>Review code with a second opinion</h3><p><code>review</code> runs reviewer agents, then skeptic agents try to disprove every report. Only findings that survive the challenge continue.</p></div>
+  <div class="panel"><h3>Gate AI-written changes in CI</h3><p><code>scan</code> uses free AST rules with no model calls and no API key. It writes SARIF for GitHub code scanning and markdown for pull-request comments.</p></div>
+  <div class="panel"><h3>Give assistants read-only repo knowledge</h3><p>An MCP server exposes symbols, callers, callees and findings. <code>fix</code> and <code>apply-plan</code> are deliberately not exposed, and a test checks that.</p></div>
+  <div class="panel"><h3>See exactly what happened</h3><p>Every model turn, tool call, check and decision is written to <code>.autoresolve/events.jsonl</code>. A terminal UI replays any run and shows patches as red/green diffs.</p></div>
+  <div class="panel"><h3>Stay in control</h3><p>Dry run by default. Unproven fixes are never applied. A policy file limits files and lines per patch and protects paths you name.</p></div>
+</div>
+<div class="split">
+  <div class="panel"><h3>Use it to <span>review, fix, gate</span></h3><ul class="plain"><li>Review a module or pull request and get findings that were already challenged.</li><li>Turn a bug report into a reproducing test and a candidate patch.</li><li>Run the free scan on every pull request.</li></ul></div>
+  <div class="panel"><h3>Don't use it to <span>replace people</span></h3><ul class="plain"><li>Replace human review. Read the diff.</li><li>Check other languages. Only Python is parsed today.</li><li>Trust results on large repos without testing first.</li></ul></div>
 </div>
 
-<h2>See the proof step</h2>
-<p>This is an illustrative example of the rule AutoResolve enforces, not a recorded run. Pick a stage.</p>
-<div class="demo">
+<h2 id="proof">See the proof step</h2>
+<p>Illustrative example based on the demo bug, not a recorded run. The docstring says <code>is_adult</code> is true at 18 or older.</p>
+<div class="panel">
   <div class="tabs" role="tablist" aria-label="Proof stages">
     <button role="tab" aria-selected="true" data-i="0">1. Before the patch</button>
     <button role="tab" aria-selected="false" data-i="1">2. After the patch</button>
-    <button role="tab" aria-selected="false" data-i="2">3. Who decides</button>
+    <button role="tab" aria-selected="false" data-i="2">3. When it can't prove it</button>
+    <button role="tab" aria-selected="false" data-i="3">4. Who decides</button>
   </div>
   <pre id="code"></pre>
   <div id="result" class="result"></div>
   <p class="note" id="why"></p>
 </div>
 
+<h2 id="works">How it works</h2>
+<p>It is a multi-agent pipeline run by a deterministic controller. Rust code decides which agent runs next. It is deliberately not an autonomous swarm, because language models skip steps, loop, and approve their own mistakes. Each row below shows what the AI does and what checks it that is not AI.</p>
+<div class="scroll"><table>
+<tr><th>Step</th><th>AI does</th><th>Not-AI check</th></tr>
+<tr><td><strong>Review</strong></td><td><span class="chip ai">AI</span> Reviewer reads code and reports suspected bugs (one generalist, or three specialists: correctness, security, robustness)</td><td><span class="chip code">Code</span> AST rule hints in the prompt, merge and voting rules</td></tr>
+<tr><td><strong>Challenge</strong></td><td><span class="chip ai">AI</span> A skeptic per issue tries to disprove it</td><td><span class="chip code">Code</span> Only confirmed issues continue</td></tr>
+<tr><td><strong>Reproduce</strong></td><td><span class="chip ai">AI</span> Tester writes a regression test</td><td><span class="chip code">Code</span> Must fail before, for the claimed reason. May not inspect the implementation</td></tr>
+<tr><td><strong>Guard</strong></td><td><span class="chip ai">AI</span> Guard writer writes a test of ordinary use</td><td><span class="chip code">Code</span> Must pass now and still pass after the patch</td></tr>
+<tr><td><strong>Fix</strong></td><td><span class="chip ai">AI</span> Fixer proposes exact search-and-replace edits</td><td><span class="chip code">Code</span> Edits must match exactly once and obey the policy file</td></tr>
+<tr><td><strong>Check</strong></td><td>None</td><td><span class="chip code">Code</span> Syntax, ruff, bandit, mypy not worse, regression test, behavior guard, your own test command</td></tr>
+<tr><td><strong>Gate</strong></td><td><span class="chip ai">AI</span> Answers four yes/no questions, including whether the patch contradicts the documented contract</td><td><span class="chip code">Code</span> Rust computes accept or reject from the answers</td></tr>
+<tr><td><strong>Verdict</strong></td><td>None</td><td><span class="chip code">Code</span> Proven only if the regression test went from failing to passing</td></tr>
+</table></div>
+<p>Proven fixes go into <code>.autoresolve/plan.json</code>. Fixes without proof are saved as unproven suggestions and are never applied by default. <code>apply-plan</code> re-checks the policy, rehearses on a scratch copy, writes the files, then runs the saved tests. The apply is all-or-nothing.</p>
+
+<h3 style="margin-top:32px">Where the model runs and what it can touch</h3>
+<ul class="plain">
+  <li><strong>Sandbox:</strong> generated tests run in Docker with no network, a read-only root filesystem, all capabilities dropped, 512 MB of memory and 1 CPU.</li>
+  <li><strong>Grounding:</strong> a tree-sitter and SQLite call graph gives agents tools to list symbols, callers and callees, and to read lines.</li>
+  <li><strong>Providers:</strong> Gemini or a local Ollama model. Two tiers: a main model for reviewer, skeptic and gate, and a cheaper worker model for tester, guard and fixer, because test failures catch their mistakes while the reviewers' mistakes would be silent.</li>
+  <li><strong>Agent guards:</strong> repeated tool calls are refused, a model that never uses tools is stopped, and prose answers are forced into structured output.</li>
+</ul>
+
+<h2>A typical session</h2>
+<pre>autoresolve-cli scan src/                                  # free: AST rules, no model calls
+autoresolve-cli review src/billing.py                      # reviewers, then skeptics
+autoresolve-cli fix src/billing.py --issue "describe the bug"   # dry run: builds plan.json
+autoresolve-cli tui                                        # watch or replay the run, read the diffs
+autoresolve-cli apply-plan                                 # re-check policy, rehearse, write, run tests</pre>
+
 <h2 id="video">Video walkthrough</h2>
 <div class="video" id="video-box"></div>
 
-<h2>What it does for a developer</h2>
+<h2 id="tools">Interfaces</h2>
 <ul class="plain">
-  <li><strong>Create and test:</strong> <code>fix --issue "bug report"</code> turns a bug description into a regression test plus a candidate patch.</li>
-  <li><strong>Review:</strong> reviewer agents find suspected bugs, and skeptic agents try to disprove each one before it goes further.</li>
-  <li><strong>Collaborate and deploy:</strong> free <code>scan</code> rules output SARIF for GitHub code scanning, markdown for pull requests, and an MCP server gives AI assistants read-only access to the repo graph.</li>
-  <li><strong>Stay in control:</strong> dry run by default, a policy file limits what a patch may touch, and <code>apply-plan</code> is the only step that writes to your repo.</li>
+  <li><strong>Terminal UI:</strong> live or replay view of the event log with patches as red/green diffs, tests, findings and the gate's answers in colour. It never calls a model or touches the repository.</li>
+  <li><strong>MCP server:</strong> read-only tools (scan, symbols, callers, callees, events summary, review). Protocol smoke-tested, not yet tried with a real MCP client.</li>
+  <li><strong>SARIF and markdown:</strong> <code>scan</code> and <code>review</code> output SARIF 2.1.0 for code scanning, and <code>review</code> can output markdown for pull-request comments.</li>
+  <li><strong>GitHub Action:</strong> the files are written, but the action has never been run on a pushed repository, so treat it as untested.</li>
 </ul>
 
-<h2>How a fix is judged</h2>
+<h2 id="measured">Measured so far</h2>
 <div class="scroll"><table>
-<tr><th>Step</th><th>Done by</th></tr>
-<tr><td>Find suspected bugs, then challenge them</td><td>Reviewer and skeptic agents</td></tr>
-<tr><td>Write a test that must fail before the patch</td><td>Tester agent, checked by running it</td></tr>
-<tr><td>Syntax, linter, security scanner, type check, policy</td><td>Non-AI checks in the sandbox</td></tr>
-<tr><td>Accept or reject the patch</td><td>Rust code, from the gate's yes/no answers</td></tr>
-<tr><td>Mark as proven or unproven</td><td>Rust code: did the test go from failing to passing?</td></tr>
+<tr><th>What</th><th>Result</th></tr>
+<tr><td>Unit tests</td><td>66 pass (62 in the core crate, 4 in the CLI)</td></tr>
+<tr><td>Sandbox isolation tests</td><td>Four tests: no network, read-only, host files hidden, local-mode contrast</td></tr>
+<tr><td>Benchmark, 15 cases, one run</td><td>Bugs detected 13 of 13. Strict pass@1 10 of 13. Lenient 11 of 13. False trust 1 (the bare-except case). 0 false alarms on 2 clean controls</td></tr>
+<tr><td>Further 7 cases</td><td>0 false alarms on 4 clean controls. One multi-bug file fixed 3 of 3 with proof. Another fixed 1 with proof and left the wrong fix unproven and unapplied</td></tr>
 </table></div>
+<p class="note">Read these carefully: one run, 22 small cases written by an AI assistant, a non-deterministic reviewer, and both model tiers were the same model because the worker setting was unset. They support comparing configurations, not claims about real-world accuracy.</p>
 
-<h2>Limitations</h2>
+<h2 id="limits">Limitations and what's next</h2>
 <ul class="plain">
-  <li>"Proven" means the claimed case is fixed. It does not mean the patch is right, so read the diff.</li>
-  <li>Python only. The call graph matches functions by name only.</li>
-  <li>Small local models are unreliable for this work.</li>
-  <li>Planned, not built: pre-commit hook, log diagnosis, edge-case test generation on the same proof layer.</li>
+  <li><strong>Proven is not correct.</strong> It means the claimed case is fixed. The contract-aware change that targets this gap is implemented but not yet measured.</li>
+  <li>The tester can write tests no fix could satisfy. Nothing is applied in that case, and this is the safe outcome.</li>
+  <li>The call graph matches calls by name only, and only Python is supported.</li>
+  <li>Small local models such as qwen3:4b are unreliable and are treated as a benchmark arm, not a working setup.</li>
+  <li>Nothing has been run against a large real repository yet.</li>
+  <li><strong>Planned:</strong> read the pending two-model benchmark runs, test with a real MCP client, run the GitHub Action, a better call graph, more languages, and pre-commit, log-diagnosis and test-generation tools on the same proof layer.</li>
 </ul>
 
 <footer>Built by Yashvant, IIITDM Kancheepuram. Source and full documentation: <a href="https://github.com/yashvantatk/autoresolve">github.com/yashvantatk/autoresolve</a></footer>
@@ -102,14 +173,16 @@ footer{margin-top:64px;color:var(--muted);font-size:.9rem}
 
 <script>
 // EDIT THIS: paste your YouTube video ID (the part after v= in the link)
-var VIDEO_ID = "";
+var VIDEO_ID = "https://drive.google.com/file/d/1sWKdSVAFa2gCDelbC_pXWpcVwmvZer08/view?usp=sharing";
 
 var stages = [
- {code:"def add_item(item, items=[]):\n    items.append(item)\n    return items\n\n# regression test\nassert add_item(1) == [1]\nassert add_item(2) == [2]   # fails: returns [1, 2]",
-  cls:"fail", res:"Test FAILS on the original code", why:"The shared default list leaks state between calls. A test that cannot fail here is thrown away."},
- {code:"def add_item(item, items=None):\n    if items is None:\n        items = []\n    items.append(item)\n    return items\n\n# same regression test\nassert add_item(1) == [1]\nassert add_item(2) == [2]   # passes",
-  cls:"pass", res:"Same test PASSES after the patch", why:"Failing before and passing after is what makes a fix proven. Without that, it is saved as an unproven suggestion and never applied by default."},
- {code:"checks:   syntax ok | linters ok | policy ok | sandbox: no network\ngate:     4 yes/no answers from the model\ndecision: computed by Rust code, not by the model",
+ {code:"def is_adult(age):\n    \"\"\"Return True when the person is 18 years old or older.\"\"\"\n    return age > 18\n\n# regression test\nassert is_adult(18) is True   # fails: returns False",
+  cls:"fail", res:"Test FAILS on the original code", why:"The docstring says 18 counts as an adult. The comparison excludes it. A test that cannot fail on the current code is thrown away."},
+ {code:"def is_adult(age):\n    \"\"\"Return True when the person is 18 years old or older.\"\"\"\n    return age >= 18\n\n# same regression test\nassert is_adult(18) is True   # passes",
+  cls:"pass", res:"Same test PASSES after the patch", why:"Failing before and passing after is what makes a fix proven, and only then does it go in the plan."},
+ {code:"def add_item(item, items=[]):   # shared default list\n    items.append(item)              # never returned or observed\n\n# no call can show the bug, so no test can fail on it",
+  cls:"neutral", res:"UNPROVEN: saved as a suggestion, never applied", why:"Some bugs cannot be observed through function calls. For these, unproven is the honest answer, and apply-plan skips them unless you pass --include-unproven."},
+ {code:"checks:   syntax | linters | policy | sandbox with no network\ngate:     four yes/no answers from the model\ndecision: computed by Rust code, not by the model",
   cls:"neutral", res:"Accept or reject is made by code", why:"The model answers questions. Deterministic code makes the call, and nothing is written to your repo until you run apply-plan."}
 ];
 var tabs = document.querySelectorAll('[role=tab]');
