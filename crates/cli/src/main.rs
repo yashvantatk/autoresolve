@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod mcp;
 mod tui;
 
 #[derive(Parser)]
@@ -163,6 +164,8 @@ enum Cmd {
         #[arg(long)]
         include_unproven: bool,
     },
+    /// MCP server on stdio: read-only tools (scan, symbols, callers, callees, events_summary, review) for AI assistants
+    Mcp,
     /// Terminal UI: watch a run live, replay it, read the diffs (reads .autoresolve/events.jsonl, no models)
     Tui {
         #[arg(long, default_value = ".")]
@@ -640,6 +643,7 @@ async fn main() -> Result<()> {
             }
             println!("review the result with: git --no-pager diff");
         }
+        Cmd::Mcp => mcp::serve().await?,
         Cmd::Tui { root, run } => tui::run(&root, run)?,
         Cmd::Sandbox { cmd, dir, writable } => {
             let dir = dir.canonicalize()?;

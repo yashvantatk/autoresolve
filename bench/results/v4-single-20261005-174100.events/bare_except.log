@@ -1,0 +1,146 @@
+
+1 confirmed issue(s) to fix
+
+=== [MEDIUM] parsing.py:5  bare except catches system signals ===
+regression test: parse_int catches KeyboardInterrupt instead of letting it propagate (fails on the current code, as it should)
+behavior guard: Checks that parse_int correctly parses valid integer strings and returns None for non-integer strings. (passes on the current code)
+Change bare except to except (ValueError, TypeError) in parse_int
+--- a/parsing.py
++++ b/parsing.py
+@@ -3,4 +3,4 @@
+     try:
+         return int(text)
+-    except:
++    except (ValueError, TypeError):
+         return None
+--- a/autoresolve_regression/test_0_bare_except_catches_system_signals.py
++++ b/autoresolve_regression/test_0_bare_except_catches_system_signals.py
+@@ -0,0 +1,12 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++import sys
++from parsing import parse_int
++
++try:
++    parse_int(KeyboardInterrupt())
++except KeyboardInterrupt:
++    pass
++else:
++    raise AssertionError("KeyboardInterrupt was caught by parse_int")
+  [PASS] syntax parsing.py 
+  [PASS] no new anti-patterns parsing.py 1 -> 0 findings
+  [PASS] lint, security and types parsing.py ruff 0->0, bandit 0->0, mypy 0->0
+  [FAIL] regression test (failed before the patch) Traceback (most recent call last):
+  File "/work/autoresolve_regression/test_0_bare_except_catches_system_signals.py", line 12, in <module>
+    raise AssertionError("KeyboardInterrupt was caught by parse_int")
+AssertionError: KeyboardInterrupt was caught by parse_int
+
+  [PASS] tests `python3 -c 'import parsing'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  -> NOT verified; not applied
+
+--- retrying 1 unverified issue(s) on top of the verified fixes ---
+
+=== [MEDIUM] parsing.py:5  bare except catches system signals ===
+regression test: parse_int catches KeyboardInterrupt via bare except (fails on the current code, as it should)
+behavior guard: Verify that parse_int successfully parses a valid integer string. (passes on the current code)
+Change bare except in parse_int to catch only ValueError and TypeError.
+--- a/parsing.py
++++ b/parsing.py
+@@ -3,4 +3,4 @@
+     try:
+         return int(text)
+-    except:
++    except (ValueError, TypeError):
+         return None
+--- a/autoresolve_regression/test_0_bare_except_catches_system_signals.py
++++ b/autoresolve_regression/test_0_bare_except_catches_system_signals.py
+@@ -0,0 +1,11 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from parsing import parse_int
++
++try:
++    parse_int(KeyboardInterrupt())
++except KeyboardInterrupt:
++    pass
++else:
++    raise AssertionError("KeyboardInterrupt was caught by parse_int")
+  [PASS] syntax parsing.py 
+  [PASS] no new anti-patterns parsing.py 1 -> 0 findings
+  [PASS] lint, security and types parsing.py ruff 0->0, bandit 0->0, mypy 0->0
+  [FAIL] regression test (failed before the patch) Traceback (most recent call last):
+  File "/work/autoresolve_regression/test_0_bare_except_catches_system_signals.py", line 11, in <module>
+    raise AssertionError("KeyboardInterrupt was caught by parse_int")
+AssertionError: KeyboardInterrupt was caught by parse_int
+
+  [PASS] tests `python3 -c 'import parsing'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  -> NOT verified; not applied
+
+0/1 fixes verified, 0 proven by a regression test (0 unproven suggestion(s)), 0 resolved by earlier fixes
+[sandbox] docker, image autoresolve-sandbox, no network, 1 cpu, 512 MB, read-only root filesystem
+[policy] max 3 file(s) and 40 changed line(s) per patch; .git/, .autoresolve/, policy.toml and saved tests are protected
+[reviewer] running 1 reviewer run(s) at once (1 specialist(s) x 1 vote(s))
+[reviewer] static scanner found candidates:
+- line 5: [PY002-bare-except] bare `except:` also catches KeyboardInterrupt/SystemExit; catch a specific exception
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"parsing.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] static_findings({"file":"parsing.py"})
+[waiting for gemini-3.1-flash-lite ...]
+[reviewer] runs found [1] issue(s); 1 kept after merging; handing to the skeptics
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"parsing.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"parsing.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"parsing.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":20,"file":"parsing.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[fix] attempt 1 failed verification, retrying with feedback
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":10,"file":"parsing.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[fix] attempt 2 failed verification, retrying with feedback
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"parsing.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"parsing.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":20,"file":"parsing.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[fix] attempt 1 failed verification, retrying with feedback
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":20,"file":"parsing.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[fix] attempt 2 failed verification, retrying with feedback
+[usage] 7 model calls (reviewer/skeptic/patch gate) + 24 (tester/fixer)
