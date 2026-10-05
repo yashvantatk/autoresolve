@@ -1,0 +1,283 @@
+
+3 confirmed issue(s) to fix
+
+=== [HIGH] inventory.py:5  Incorrect price calculation in total_price ===
+regression test: total_price calculates sum of price * quantity instead of price + quantity (fails on the current code, as it should)
+behavior guard: total_price returns the sum of items when given a valid list of tuples (passes on the current code)
+Fix total_price calculation to multiply price * quantity instead of adding them.
+--- a/inventory.py
++++ b/inventory.py
+@@ -3,5 +3,5 @@
+     total = 0
+     for name, price, quantity in items:
+-        total += price + quantity
++        total += price * quantity
+     return total
+ 
+--- a/autoresolve_regression/test_0_incorrect_price_calculation_in_total_pri.py
++++ b/autoresolve_regression/test_0_incorrect_price_calculation_in_total_pri.py
+@@ -0,0 +1,10 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from inventory import total_price
++
++def test_total_price():
++    items = [("apple", 2.5, 4)]
++    assert total_price(items) == 10.0
++
++test_total_price()
+  [PASS] syntax inventory.py 
+  [PASS] no new anti-patterns inventory.py 0 -> 0 findings
+  [PASS] lint, security and types inventory.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import inventory'` (baseline: pass)
+  [FAIL] behavior guard (ordinary use still works) Traceback (most recent call last):
+  File "/work/autoresolve_regression/test_0_incorrect_price_calculation_in_total_pri-guard.py", line 7, in <module>
+    assert total_price(items) == 11
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+  -> NOT verified; not applied
+
+=== [HIGH] inventory.py:14  Premature return in find_item loop ===
+regression test: find_item returns None on first iteration if the item is not at the start of the list (fails on the current code, as it should)
+behavior guard: find_item correctly returns an item when it is the first item in the list. (passes on the current code)
+Move return None outside the for loop in find_item so all items are checked.
+--- a/inventory.py
++++ b/inventory.py
+@@ -12,5 +12,5 @@
+         if item[0] == name:
+             return item
+-        return None
++    return None
+ 
+ 
+--- a/autoresolve_regression/test_1_premature_return_in_find_item_loop.py
++++ b/autoresolve_regression/test_1_premature_return_in_find_item_loop.py
+@@ -0,0 +1,11 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from inventory import find_item
++
++items = [
++    ("apple", 1.0, 10),
++    ("banana", 0.5, 20),
++]
++result = find_item(items, "banana")
++assert result == ("banana", 0.5, 20)
+  [PASS] syntax inventory.py 
+  [PASS] no new anti-patterns inventory.py 0 -> 0 findings
+  [PASS] lint, security and types inventory.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import inventory'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The patch correctly moves the 'return None' statement outside the 'for' loop, ensuring the function correctly iterates through all items before concluding the item is not present. This fulfills the documented contract and fixes the logic error.
+  -> PROVEN: the regression test fails before the patch and passes after
+
+=== [HIGH] inventory.py:19  Incorrect logic for returning top_n largest values ===
+regression test: top_n should return the n largest values, largest first (fails on the current code, as it should)
+behavior guard: Verify that top_n returns a list of the expected length for ordinary inputs. (passes on the current code)
+Fix top_n to return the n largest values, largest first by using sorted(values, reverse=True)[:n].
+--- a/inventory.py
++++ b/inventory.py
+@@ -17,3 +17,3 @@
+ def top_n(values, n):
+     """Return the n largest values, largest first."""
+-    return sorted(values)[:n]
++    return sorted(values, reverse=True)[:n]
+--- a/autoresolve_regression/test_2_incorrect_logic_for_returning_top_n_larg.py
++++ b/autoresolve_regression/test_2_incorrect_logic_for_returning_top_n_larg.py
+@@ -0,0 +1,11 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from inventory import top_n
++
++def test_top_n_largest():
++    values = [1, 5, 3, 9, 2]
++    assert top_n(values, 3) == [9, 5, 3]
++
++if __name__ == '__main__':
++    test_top_n_largest()
+  [PASS] syntax inventory.py 
+  [PASS] no new anti-patterns inventory.py 0 -> 0 findings
+  [PASS] lint, security and types inventory.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import inventory'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The patch correctly updates the `top_n` function to use `reverse=True` in the `sorted` call. This fulfills the documented contract ("Return the n largest values, largest first") and fixes the identified bug. The patch is minimal and does not affect the other identified bugs.
+  -> PROVEN: the regression test fails before the patch and passes after
+
+--- retrying 1 unverified issue(s) on top of the verified fixes ---
+
+=== [HIGH] inventory.py:5  Incorrect price calculation in total_price ===
+regression test: total_price calculates total price using price * quantity instead of price + quantity (fails on the current code, as it should)
+behavior guard: total_price calculates total price correctly for ordinary items list (passes on the current code)
+Fix total_price calculation to multiply price * quantity instead of adding.
+--- a/inventory.py
++++ b/inventory.py
+@@ -3,5 +3,5 @@
+     total = 0
+     for name, price, quantity in items:
+-        total += price + quantity
++        total += price * quantity
+     return total
+ 
+--- a/autoresolve_regression/test_0_incorrect_price_calculation_in_total_pri.py
++++ b/autoresolve_regression/test_0_incorrect_price_calculation_in_total_pri.py
+@@ -0,0 +1,10 @@
++import sys, pathlib
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
++
++from inventory import total_price
++
++def test_total_price_multiplication():
++    items = [("apple", 2.5, 3), ("banana", 1.0, 5)]
++    assert total_price(items) == 12.5
++
++test_total_price_multiplication()
+  [PASS] syntax inventory.py 
+  [PASS] no new anti-patterns inventory.py 0 -> 0 findings
+  [PASS] lint, security and types inventory.py ruff 0->0, bandit 0->0, mypy 0->0
+  [PASS] regression test (failed before the patch) now passes
+  [PASS] tests `python3 -c 'import inventory'` (baseline: pass)
+  [PASS] behavior guard (ordinary use still works) passes before and after the patch
+  [PASS] patch review (no unrelated changes) The patch correctly changes addition to multiplication as required by the docstring, and it does not affect any other code.
+  -> PROVEN: the regression test fails before the patch and passes after
+
+3/3 fixes verified, 3 proven by a regression test (0 unproven suggestion(s)), 0 resolved by earlier fixes
+plan saved to /tmp/bench-multi_inventory-9szlz_74/.autoresolve/plan.json (3 proven fix(es), 0 unproven suggestion(s)). Review it, then apply the proven ones with:
+  cargo run -p autoresolve-cli -- apply-plan
+[sandbox] docker, image autoresolve-sandbox, no network, 1 cpu, 512 MB, read-only root filesystem
+[policy] max 3 file(s) and 40 changed line(s) per patch; .git/, .autoresolve/, policy.toml and saved tests are protected
+[reviewer] running 1 reviewer run(s) at once (1 specialist(s) x 1 vote(s))
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":200,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 3] static_findings({"file":"inventory.py"})
+[waiting for gemini-3.1-flash-lite ...]
+[reviewer] runs found [3] issue(s); 3 kept after merging; handing to the skeptics
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":19,"file":"inventory.py","start":17})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 503 Service Unavailable, waiting 2s (attempt 1/4)
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[repro] attempt 1 rejected: your test PASSED on the current buggy code; it must fail there. A regression test asserts the CORRECT behavior, so it fails while the bug exists and passes once it is fixed. For a vulnerability or an unwanted side effect, do not assert that the exploit works: assert that the harmful effect does NOT happen
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":30,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[fix] attempt 1 failed verification, retrying with feedback
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":30,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[fix] attempt 2 failed verification, retrying with feedback
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":20,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":20,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":30,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":9})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":19,"file":"inventory.py","start":17})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":30,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":25,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[step 3] get_callers({"name":"top_n"})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":30,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[retry] Gemini returned 503 Service Unavailable, waiting 2s (attempt 1/4)
+[step 2] read_lines({"end":20,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":15,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.5-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.5-flash-lite ...]
+[step 2] read_lines({"end":30,"file":"inventory.py","start":1})
+[waiting for gemini-3.5-flash-lite ...]
+[step 3] get_callers({"name":"total_price"})
+[waiting for gemini-3.5-flash-lite ...]
+[waiting for gemini-3.1-flash-lite ...]
+[step 1] list_symbols({})
+[waiting for gemini-3.1-flash-lite ...]
+[step 2] read_lines({"end":6,"file":"inventory.py","start":1})
+[waiting for gemini-3.1-flash-lite ...]
+[usage] 28 model calls (reviewer/skeptic/patch gate) + 44 (tester/fixer)

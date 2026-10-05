@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoResolve: AI bug fixes that have to prove themselves</title>
+<meta name="description" content="A Rust CLI that reviews Python code with AI agents and keeps only the fixes it can prove in a sandbox.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600&family=Newsreader:opsz,wght@6..72,500;6..72,700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef2f4;--panel:#fff;--ink:#12202a;--muted:#4d5f6b;--line:#cdd7dd;--accent:#2f5d7c;--fail:#b3261e;--failbg:#fbe9e7;--pass:#1b6e47;--passbg:#e3f3ea;--code:#f6f8f9;box-sizing:border-box}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1a21;--panel:#162630;--ink:#e6eef2;--muted:#9db0bc;--line:#2a3f4d;--accent:#7fb2d4;--fail:#ff8a80;--failbg:#3a1e1c;--pass:#6fd1a0;--passbg:#14301f;--code:#112028}}
+:root[data-theme="dark"]{--bg:#0f1a21;--panel:#162630;--ink:#e6eef2;--muted:#9db0bc;--line:#2a3f4d;--accent:#7fb2d4;--fail:#ff8a80;--failbg:#3a1e1c;--pass:#6fd1a0;--passbg:#14301f;--code:#112028}
+*,*::before,*::after{box-sizing:inherit}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 "Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+main{max-width:860px;margin:0 auto;padding:48px 20px 80px}
+h1,h2{font-family:Newsreader,Georgia,"Times New Roman",serif;line-height:1.15;margin:0}
+h1{font-size:clamp(2.2rem,6vw,3.6rem);font-weight:700;letter-spacing:-.01em}
+h2{font-size:1.7rem;margin-top:64px;margin-bottom:12px}
+p{max-width:68ch;margin:12px 0}
+.lead{font-size:1.2rem;color:var(--muted)}
+a{color:var(--accent)}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.btns{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}
+.btn{display:inline-block;padding:11px 18px;border-radius:6px;border:1.5px solid var(--accent);color:var(--accent);text-decoration:none;font-weight:600}
+.btn.primary{background:var(--accent);color:var(--bg)}
+.demo{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin-top:28px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.tabs button{font:inherit;font-weight:600;padding:8px 14px;border-radius:6px;border:1.5px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+.tabs button[aria-selected="true"]{border-color:var(--accent);background:var(--accent);color:var(--bg)}
+pre{margin:0;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:14px;overflow-x:auto;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.result{margin-top:14px;padding:12px 14px;border-radius:6px;font-weight:600}
+.result.fail{background:var(--failbg);color:var(--fail)}
+.result.pass{background:var(--passbg);color:var(--pass)}
+.result.neutral{background:var(--code);color:var(--ink);border:1px solid var(--line)}
+.note{font-size:.9rem;color:var(--muted)}
+.video{margin-top:20px;aspect-ratio:16/9;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px}
+.video iframe{width:100%;height:100%;border:0}
+ul.plain{padding-left:20px;max-width:68ch}
+ul.plain li{margin:8px 0}
+table{border-collapse:collapse;width:100%;font-size:.95rem}
+.scroll{overflow-x:auto}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+footer{margin-top:64px;color:var(--muted);font-size:.9rem}
+@media (prefers-reduced-motion:no-preference){.result{transition:background .2s,color .2s}}
+</style>
+</head>
+<body>
+<main>
+<h1>AI proposes the fix. A failing test proves it.</h1>
+<p class="lead">AutoResolve is a Rust command-line tool that reviews Python code with AI agents and keeps only the fixes it can prove. A fix counts as proven when a generated test fails on the original code and passes after the patch, inside a locked-down Docker sandbox.</p>
+<div class="btns">
+  <a class="btn primary" href="https://github.com/yashvantatk/autoresolve">View the code</a>
+  <a class="btn" href="#video">Watch the walkthrough</a>
+</div>
+
+<h2>See the proof step</h2>
+<p>This is an illustrative example of the rule AutoResolve enforces, not a recorded run. Pick a stage.</p>
+<div class="demo">
+  <div class="tabs" role="tablist" aria-label="Proof stages">
+    <button role="tab" aria-selected="true" data-i="0">1. Before the patch</button>
+    <button role="tab" aria-selected="false" data-i="1">2. After the patch</button>
+    <button role="tab" aria-selected="false" data-i="2">3. Who decides</button>
+  </div>
+  <pre id="code"></pre>
+  <div id="result" class="result"></div>
+  <p class="note" id="why"></p>
+</div>
+
+<h2 id="video">Video walkthrough</h2>
+<div class="video" id="video-box"></div>
+
+<h2>What it does for a developer</h2>
+<ul class="plain">
+  <li><strong>Create and test:</strong> <code>fix --issue "bug report"</code> turns a bug description into a regression test plus a candidate patch.</li>
+  <li><strong>Review:</strong> reviewer agents find suspected bugs, and skeptic agents try to disprove each one before it goes further.</li>
+  <li><strong>Collaborate and deploy:</strong> free <code>scan</code> rules output SARIF for GitHub code scanning, markdown for pull requests, and an MCP server gives AI assistants read-only access to the repo graph.</li>
+  <li><strong>Stay in control:</strong> dry run by default, a policy file limits what a patch may touch, and <code>apply-plan</code> is the only step that writes to your repo.</li>
+</ul>
+
+<h2>How a fix is judged</h2>
+<div class="scroll"><table>
+<tr><th>Step</th><th>Done by</th></tr>
+<tr><td>Find suspected bugs, then challenge them</td><td>Reviewer and skeptic agents</td></tr>
+<tr><td>Write a test that must fail before the patch</td><td>Tester agent, checked by running it</td></tr>
+<tr><td>Syntax, linter, security scanner, type check, policy</td><td>Non-AI checks in the sandbox</td></tr>
+<tr><td>Accept or reject the patch</td><td>Rust code, from the gate's yes/no answers</td></tr>
+<tr><td>Mark as proven or unproven</td><td>Rust code: did the test go from failing to passing?</td></tr>
+</table></div>
+
+<h2>Limitations</h2>
+<ul class="plain">
+  <li>"Proven" means the claimed case is fixed. It does not mean the patch is right, so read the diff.</li>
+  <li>Python only. The call graph matches functions by name only.</li>
+  <li>Small local models are unreliable for this work.</li>
+  <li>Planned, not built: pre-commit hook, log diagnosis, edge-case test generation on the same proof layer.</li>
+</ul>
+
+<footer>Built by Yashvant, IIITDM Kancheepuram. Source and full documentation: <a href="https://github.com/yashvantatk/autoresolve">github.com/yashvantatk/autoresolve</a></footer>
+</main>
+
+<script>
+// EDIT THIS: paste your YouTube video ID (the part after v= in the link)
+var VIDEO_ID = "";
+
+var stages = [
+ {code:"def add_item(item, items=[]):\n    items.append(item)\n    return items\n\n# regression test\nassert add_item(1) == [1]\nassert add_item(2) == [2]   # fails: returns [1, 2]",
+  cls:"fail", res:"Test FAILS on the original code", why:"The shared default list leaks state between calls. A test that cannot fail here is thrown away."},
+ {code:"def add_item(item, items=None):\n    if items is None:\n        items = []\n    items.append(item)\n    return items\n\n# same regression test\nassert add_item(1) == [1]\nassert add_item(2) == [2]   # passes",
+  cls:"pass", res:"Same test PASSES after the patch", why:"Failing before and passing after is what makes a fix proven. Without that, it is saved as an unproven suggestion and never applied by default."},
+ {code:"checks:   syntax ok | linters ok | policy ok | sandbox: no network\ngate:     4 yes/no answers from the model\ndecision: computed by Rust code, not by the model",
+  cls:"neutral", res:"Accept or reject is made by code", why:"The model answers questions. Deterministic code makes the call, and nothing is written to your repo until you run apply-plan."}
+];
+var tabs = document.querySelectorAll('[role=tab]');
+function show(i){
+  tabs.forEach(function(t,k){t.setAttribute('aria-selected', k==i)});
+  document.getElementById('code').textContent = stages[i].code;
+  var r = document.getElementById('result');
+  r.className = 'result ' + stages[i].cls; r.textContent = stages[i].res;
+  document.getElementById('why').textContent = stages[i].why;
+}
+tabs.forEach(function(t){t.addEventListener('click',function(){show(+t.dataset.i)})});
+show(0);
+
+var box = document.getElementById('video-box');
+if (VIDEO_ID) {
+  var f = document.createElement('iframe');
+  f.src = 'https://www.youtube.com/embed/' + VIDEO_ID;
+  f.title = 'AutoResolve walkthrough';
+  f.allowFullscreen = true;
+  box.style.padding = '0'; box.appendChild(f);
+} else {
+  box.textContent = 'Video link goes here. Set VIDEO_ID in index.html.';
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "items": [
+    {
+      "title": "Incorrect index logic in pick_slot",
+      "summary": "Fix pick_slot to correctly use hour as 0-indexed per docstring.",
+      "proven": true,
+      "edits": [
+        {
+          "file": "scheduler.py",
+          "search": "    return slots[hour - 1]",
+          "replace": "    return slots[hour]"
+        }
+      ],
+      "test": [
+        "autoresolve_regression/test_0_incorrect_index_logic_in_pick_slot.py",
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\nfrom scheduler import pick_slot\n\nslots = ['slot0', 'slot1', 'slot2']\nassert pick_slot(slots, 0) == 'slot0'\n"
+      ]
+    },
+    {
+      "title": "ZeroDivisionError in average_wait",
+      "summary": "Fix ZeroDivisionError in average_wait when waits is empty by returning 0.0.",
+      "proven": false,
+      "edits": [
+        {
+          "file": "scheduler.py",
+          "search": "def average_wait(waits):\n    \"\"\"Return the mean waiting time, or 0.0 when nobody waited.\"\"\"\n    return sum(waits) / len(waits)",
+          "replace": "def average_wait(waits):\n    \"\"\"Return the mean waiting time, or 0.0 when nobody waited.\"\"\"\n    return sum(waits) / len(waits) if waits else 0.0"
+        }
+      ],
+      "test": null
+    }
+  ]
+}

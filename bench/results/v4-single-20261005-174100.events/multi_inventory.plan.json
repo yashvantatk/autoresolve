@@ -1,0 +1,52 @@
+{
+  "items": [
+    {
+      "title": "Premature return in find_item loop",
+      "summary": "Move return None outside the for loop in find_item so all items are checked.",
+      "proven": true,
+      "edits": [
+        {
+          "file": "inventory.py",
+          "search": "def find_item(items, name):\n    \"\"\"Return the (name, price, quantity) tuple called name, or None when there is none.\"\"\"\n    for item in items:\n        if item[0] == name:\n            return item\n        return None",
+          "replace": "def find_item(items, name):\n    \"\"\"Return the (name, price, quantity) tuple called name, or None when there is none.\"\"\"\n    for item in items:\n        if item[0] == name:\n            return item\n    return None"
+        }
+      ],
+      "test": [
+        "autoresolve_regression/test_1_premature_return_in_find_item_loop.py",
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\nfrom inventory import find_item\n\nitems = [\n    (\"apple\", 1.0, 10),\n    (\"banana\", 0.5, 20),\n]\nresult = find_item(items, \"banana\")\nassert result == (\"banana\", 0.5, 20)\n"
+      ]
+    },
+    {
+      "title": "Incorrect logic for returning top_n largest values",
+      "summary": "Fix top_n to return the n largest values, largest first by using sorted(values, reverse=True)[:n].",
+      "proven": true,
+      "edits": [
+        {
+          "file": "inventory.py",
+          "search": "def top_n(values, n):\n    \"\"\"Return the n largest values, largest first.\"\"\"\n    return sorted(values)[:n]",
+          "replace": "def top_n(values, n):\n    \"\"\"Return the n largest values, largest first.\"\"\"\n    return sorted(values, reverse=True)[:n]"
+        }
+      ],
+      "test": [
+        "autoresolve_regression/test_2_incorrect_logic_for_returning_top_n_larg.py",
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\nfrom inventory import top_n\n\ndef test_top_n_largest():\n    values = [1, 5, 3, 9, 2]\n    assert top_n(values, 3) == [9, 5, 3]\n\nif __name__ == '__main__':\n    test_top_n_largest()\n"
+      ]
+    },
+    {
+      "title": "Incorrect price calculation in total_price",
+      "summary": "Fix total_price calculation to multiply price * quantity instead of adding.",
+      "proven": true,
+      "edits": [
+        {
+          "file": "inventory.py",
+          "search": "        total += price + quantity",
+          "replace": "        total += price * quantity"
+        }
+      ],
+      "test": [
+        "autoresolve_regression/test_0_incorrect_price_calculation_in_total_pri.py",
+        "import sys, pathlib\nsys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))\n\nfrom inventory import total_price\n\ndef test_total_price_multiplication():\n    items = [(\"apple\", 2.5, 3), (\"banana\", 1.0, 5)]\n    assert total_price(items) == 12.5\n\ntest_total_price_multiplication()\n"
+      ]
+    }
+  ]
+}
