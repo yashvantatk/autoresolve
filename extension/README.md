@@ -1,21 +1,18 @@
 # AutoResolve VS Code Extension
 
-AI-powered Python code review and repair extension for VS Code that keeps **only the fixes it can prove in a sandbox**.
+This is the UI frontend for the AutoResolve multi-agent pipeline. 
 
-## Features
+**⚠️ Important Setup Required**
+This extension does not bundle the AI engine or API keys. It requires the Rust `autoresolve-cli` backend running locally on your machine.
 
-- **One-Click Run**: Click "Run AutoResolve" from the sidebar on any active Python file.
-- **Live Agent Progress**: Real-time progress bar tracking the Reviewer, Skeptic, Tester, Guard Writer, Fixer, and Patch Gate agents by tailing `.autoresolve/events.jsonl`.
-- **Native Red/Green Diffs**: Proven patches generated into `.autoresolve/plan.json` are rendered side-by-side using VS Code's native diff editor.
-- **Accept or Reject**: One-click "Accept Fix" applies the search-and-replace edits directly to your workspace.
-- **Fast AST Scan**: Free, instant tree-sitter scan for anti-patterns (mutable defaults, bare except, `== None`) via the AutoResolve MCP server without burning LLM quota.
+**1. Build the Backend:**
+Clone the [AutoResolve repository](https://github.com/yashvantatk/autoresolve), install Rust, and compile the CLI:
+`cargo build`
 
-## Development & Testing in Antigravity IDE
+**2. Bring Your Own Key (BYOK):**
+Set your provider and API key in your terminal environment before launching VS Code:
+`export AUTORESOLVE_PROVIDER=gemini`
+`export GEMINI_API_KEY=your_api_key_here`
 
-1. Open this folder in the Antigravity IDE:
-   ```bash
-   cd /home/yashvant/autoresolve/extension
-   ```
-2. Run `npm install`
-3. Press `F5` to start the **Extension Development Host**.
-4. In the Extension Development Host window, open a Python file and click the **AutoResolve** icon in the sidebar to test!
+**3. Connect the CLI:**
+Ensure the compiled `autoresolve-cli` binary is available in your system's PATH (e.g., symlinked to `/usr/local/bin`).
