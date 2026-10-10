@@ -1,0 +1,38 @@
+name: "AutoResolve Scan"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 0 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    name: AST Anti-pattern Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build AutoResolve CLI
+        run: cargo build --release -p autoresolve-cli
+
+      - name: Run Scan & Generate SARIF
+        run: |
+          ./target/release/autoresolve-cli scan . --format sarif --out autoresolve-results.sarif || true
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: autoresolve-results.sarif
+          category: autoresolve-ast

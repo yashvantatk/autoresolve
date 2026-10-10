@@ -1,0 +1,29 @@
+# AutoResolve: Python-side requirements
+#
+# AutoResolve core is written in Rust (Rust 1.90+ edition 2024).
+# Install the Rust toolchain via rustup.
+# Rust dependencies are managed via Cargo (Cargo.toml).
+#
+# This file provides the testing and analysis tooling executed during verification:
+#   - pytest: runs generated regression tests and behavior guards
+#   - ruff:   fast AST linter for syntax and error checks (E9, F rules)
+#   - bandit: static analysis for security vulnerability checks
+#   - mypy:   static type checker
+#
+# Normal Docker Sandbox Mode (Default):
+# These tools are pre-installed inside the Docker image (docker/sandbox.Dockerfile).
+# You do not need to install them on your host unless running in local mode:
+#   docker build -t autoresolve-sandbox -f docker/sandbox.Dockerfile docker/
+#   export AUTORESOLVE_DOCKER_IMAGE=autoresolve-sandbox
+#
+# Local Mode (AUTORESOLVE_SANDBOX=local):
+# Install into your local environment or virtualenv:
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# The benchmark runner (bench/run_bench.py) uses only the Python 3.10+ standard library.
+
+pytest>=8.0.0
+ruff>=0.3.0
+bandit>=1.7.0
+mypy>=1.9.0

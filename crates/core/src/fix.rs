@@ -194,7 +194,7 @@ copy the code under test into the test. If the claim is about an unwanted side e
 a command run), a correct fix may raise instead of returning: call the code inside `try/except Exception: \
 pass` and assert ONLY on the side effect afterwards (this is the one allowed use of try/except). Create \
 any side-effect file inside a `tempfile.TemporaryDirectory()` and use absolute paths, because the repo \
-directory may be read-only. If the task shows a DOCUMENTED CONTRACT, also assert the contract rules that bear on the claim (for example, when it says other errors must propagate, call the code with an input that raises a different exception and assert that it still propagates), so that a fix which breaks the contract fails the test.";
+directory may be read-only. If the task shows a DOCUMENTED CONTRACT, also assert the contract rules that bear on the claim (for example, when it says other errors must propagate, call the code with an input that raises a different exception and assert that it still propagates), so that a fix which breaks the contract fails the test. When testing that system signals or uncaught exceptions propagate, never pass a non-string object into a string-parsing function (which raises TypeError instead of the system signal); test the contract propagation directly or mock the signal.";
 
 const GUARD_SYSTEM: &str = "You write a BEHAVIOR GUARD: a minimal standalone Python script that checks the \
 code around a bug still works for ordinary, legitimate use. It must PASS on the current code and keep passing \
@@ -204,8 +204,9 @@ list, a typical string), and assert the ordinary result exactly (the output or r
 bug itself: no malicious or empty or edge-case input, nothing that currently fails, nothing a correct fix may \
 change. Rules: plain asserts, no third-party packages; import the REAL code normally (the repo root is already \
 on sys.path) and never copy it into the script; deterministic, no network; do not inspect the implementation \
-(no `__defaults__`, `inspect`, `ast`, or reading source files); no commentary. Read the code first with the \
-tools, then call submit_guard.";
+(no `__defaults__`, `inspect`, `ast`, or reading source files); no commentary. If the task shows a DOCUMENTED \
+CONTRACT, use it as the specification of ordinary, legitimate behavior and ensure the guard asserts what the contract \
+defines as ordinary valid behavior. Read the code first with the tools, then call submit_guard.";
 
 fn submit_guard_spec() -> ToolSpec {
     ToolSpec {
@@ -239,6 +240,7 @@ pub async fn write_guard(
     max_steps: usize,
 ) -> Result<GuardTest> {
     let root = tools.root();
+    let issue = &with_contract(root, issue);
     let mut feedback = String::new();
     for attempt in 1..=2 {
         let mut specs = Tools::specs();

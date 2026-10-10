@@ -1,0 +1,29 @@
+name: "AutoResolve Code Scanner"
+description: "Scan Python code for anti-patterns and upload SARIF to GitHub code scanning without LLM quota"
+inputs:
+  path:
+    description: "Directory or file to scan"
+    required: false
+    default: "."
+  sarif-file:
+    description: "Output SARIF file destination"
+    required: false
+    default: "autoresolve-results.sarif"
+outputs:
+  sarif:
+    description: "Path to the generated SARIF file"
+    value: ${{ inputs.sarif-file }}
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build AutoResolve CLI
+      shell: bash
+      run: cargo build --release -p autoresolve-cli
+
+    - name: Run AutoResolve AST Scan
+      shell: bash
+      run: |
+        ./target/release/autoresolve-cli scan "${{ inputs.path }}" --format sarif --out "${{ inputs.sarif-file }}" || true

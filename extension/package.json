@@ -1,0 +1,103 @@
+{
+  "name": "autoresolve-vscode",
+  "displayName": "AutoResolve",
+  "description": "AI code review and repair for Python with proven fixes only",
+  "version": "0.1.0",
+  "publisher": "autoresolve",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Testing"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:python",
+    "onView:autoresolve.sidebar",
+    "onCommand:autoresolve.runFix",
+    "onCommand:autoresolve.runScan",
+    "onCommand:autoresolve.reviewActiveFile",
+    "onCommand:autoresolve.viewPlanDiffs"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "autoresolve-view-container",
+          "title": "AutoResolve",
+          "icon": "$(shield)"
+        }
+      ]
+    },
+    "views": {
+      "autoresolve-view-container": [
+        {
+          "type": "webview",
+          "id": "autoresolve.sidebar",
+          "name": "AutoResolve Control"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "autoresolve.runFix",
+        "title": "Run AutoResolve on Active File",
+        "category": "AutoResolve"
+      },
+      {
+        "command": "autoresolve.runScan",
+        "title": "Run AST Scan",
+        "category": "AutoResolve"
+      },
+      {
+        "command": "autoresolve.reviewActiveFile",
+        "title": "Review Active File (MCP)",
+        "category": "AutoResolve"
+      },
+      {
+        "command": "autoresolve.viewPlanDiffs",
+        "title": "Review Proven Fixes (Diff)",
+        "category": "AutoResolve"
+      },
+      {
+        "command": "autoresolve.acceptFix",
+        "title": "Accept & Apply Fix",
+        "category": "AutoResolve"
+      },
+      {
+        "command": "autoresolve.rejectFix",
+        "title": "Reject Fix",
+        "category": "AutoResolve"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "AutoResolve Configuration",
+      "properties": {
+        "autoresolve.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the autoresolve-cli binary (defaults to target/debug/autoresolve-cli in workspace)"
+        },
+        "autoresolve.pythonCommand": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python command to run tests"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}
