@@ -138,6 +138,9 @@ enum Cmd {
         /// Fix a bug you describe instead of running the reviewer, e.g. --issue "parse_int swallows TypeError"
         #[arg(long)]
         issue: Option<String>,
+        /// Run deterministic AST and ruff patching without any LLM calls
+        #[arg(short = 'd', long)]
+        deterministic: bool,
     },
     /// Summarize a recorded run: per-role model calls, time, tool use and outcome (no models involved)
     Events {
@@ -342,7 +345,11 @@ async fn main() -> Result<()> {
             }
             eprintln!("[usage] {} model calls", provider.calls());
         }
-        Cmd::Fix { file, root, test_cmd, apply, max_steps, reviewers, votes, min_votes, issue } => {
+        Cmd::Fix { file, root, test_cmd, apply, max_steps, reviewers, votes, min_votes, issue, deterministic } => {
+            if deterministic {
+                autoresolve_core::pipeline::run_deterministic_cli(&root, &file, apply)?;
+                return Ok(());
+            }
             let provider = llm::provider_from_env(false)?; // reviewer and skeptic
             let strong = llm::provider_from_env(true)?; // tester, fixer and patch gate
             index_repo(&root, &cli.db)?;
@@ -355,6 +362,10 @@ async fn main() -> Result<()> {
             let policy = Policy::load(&real)?; // a broken policy.toml stops the run here
             eprintln!("[policy] {}", policy.describe());
             fix::clean_scratch(&real); // start from a clean slate: no stale copies for the models to wander into
+            let plan_path = real.join(".autoresolve").join("plan.json");
+            if plan_path.exists() {
+                let _ = std::fs::remove_file(&plan_path);
+            }
             // Verified fixes accumulate in a staging copy, so later fixes are tested on top of earlier ones.
             let work = fix::create_sandbox(&real, "work")?;
             let tools = Tools::new(&graph, &work)?;
@@ -376,7 +387,10 @@ async fn main() -> Result<()> {
             events::emit("review_done", serde_json::json!({"confirmed": confirmed.len()}));
             println!("\n{} confirmed issue(s) to fix", confirmed.len());
 
-            let mut plan = Plan::default();
+            let mut plan = Plan {
+                target_file: Some(target.clone()),
+                items: Vec::new(),
+            };
             let (mut verified, mut proven, mut already) = (0, 0, 0);
             let mut queue: Vec<(usize, &review::Judged)> = confirmed.iter().enumerate().collect();
             for round in 1..=2 {
@@ -549,12 +563,12 @@ async fn main() -> Result<()> {
                 confirmed.len(),
                 verified - proven
             );
+            let path = real.join(".autoresolve").join("plan.json");
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&path, serde_json::to_string_pretty(&plan)?)?;
             if !plan.items.is_empty() {
-                let path = real.join(".autoresolve").join("plan.json");
-                if let Some(dir) = path.parent() {
-                    std::fs::create_dir_all(dir)?;
-                }
-                std::fs::write(&path, serde_json::to_string_pretty(&plan)?)?;
                 println!(
                     "plan saved to {} ({proven} proven fix(es), {} unproven suggestion(s)). Review it, then apply the proven ones with:\n  cargo run -p autoresolve-cli -- apply-plan",
                     path.display(),
@@ -565,6 +579,7 @@ async fn main() -> Result<()> {
             events::emit(
                 "run_end",
                 serde_json::json!({
+                    "target_file": target,
                     "verified": verified, "proven": proven, "resolved_earlier": already, "confirmed": confirmed.len(),
                     "calls_main": provider.calls(), "calls_worker": strong.calls(),
                     "elapsed_ms": started.elapsed().as_millis() as u64

@@ -9,9 +9,14 @@ export class PipelineRunner {
   private isRunning = false;
 
   constructor(
-    private readonly binaryPath: string,
-    private readonly workspaceRoot: string
+    private binaryPath: string,
+    private readonly workspaceRoot: string,
+    private readonly context?: vscode.ExtensionContext
   ) {}
+
+  public setBinaryPath(p: string): void {
+    this.binaryPath = p;
+  }
 
   public get running(): boolean {
     return this.isRunning;
@@ -20,7 +25,8 @@ export class PipelineRunner {
   public async runFix(
     relativeFilePath: string,
     onProgress?: (p: PipelineProgress) => void,
-    onEvent?: (e: AutoResolveEvent) => void
+    onEvent?: (e: AutoResolveEvent) => void,
+    customEnv?: NodeJS.ProcessEnv
   ): Promise<Plan | null> {
     if (this.isRunning) {
       throw new Error("An AutoResolve run is already in progress.");
@@ -29,6 +35,15 @@ export class PipelineRunner {
     this.isRunning = true;
     const eventsPath = path.join(this.workspaceRoot, ".autoresolve", "events.jsonl");
     const planPath = path.join(this.workspaceRoot, ".autoresolve", "plan.json");
+
+    // Explicitly delete any stale plan.json from a previous run
+    if (fs.existsSync(planPath)) {
+      try {
+        fs.unlinkSync(planPath);
+      } catch (e) {
+        console.warn("Could not delete previous plan.json", e);
+      }
+    }
 
     let lastBytesRead = 0;
     if (fs.existsSync(eventsPath)) {
@@ -39,14 +54,35 @@ export class PipelineRunner {
       }
     }
 
+    let apiKey = this.context ? await this.context.secrets.get("autoresolve.geminiApiKey") : undefined;
+    const hasValidKey = Boolean(apiKey && apiKey.trim().length > 0);
+    const provider = vscode.workspace.getConfiguration("autoresolve").get<string>("provider");
+
     const args = ["fix", relativeFilePath, "--root", "."];
+
+    if (hasValidKey || provider === "ollama") {
+      // Standard AI pipeline execution
+    } else {
+      vscode.window.showInformationMessage(
+        "No API key detected. Running lightweight deterministic auto-patcher..."
+      );
+      args.push("--deterministic");
+    }
+
+    const spawnEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      AUTORESOLVE_PROVIDER: provider || "gemini",
+      ...(customEnv || {}),
+      ...(hasValidKey ? { GEMINI_API_KEY: apiKey!.trim() } : {}),
+    };
+    if (!hasValidKey) {
+      delete spawnEnv.GEMINI_API_KEY;
+    }
 
     return new Promise<Plan | null>((resolve, reject) => {
       this.activeProcess = cp.spawn(this.binaryPath, args, {
         cwd: this.workspaceRoot,
-        env: {
-          ...process.env,
-        },
+        env: spawnEnv,
       });
 
       let lineBuffer = "";
@@ -180,6 +216,9 @@ export class PipelineRunner {
           try {
             const rawPlan = fs.readFileSync(planPath, "utf8");
             const plan: Plan = JSON.parse(rawPlan);
+            if (!plan.target_file) {
+              plan.target_file = relativeFilePath;
+            }
             resolve(plan);
             return;
           } catch (e) {

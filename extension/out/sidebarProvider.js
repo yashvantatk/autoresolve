@@ -60,6 +60,7 @@ class SidebarProvider {
                     const editor = vscode.window.activeTextEditor;
                     if (editor && editor.document.languageId === "python") {
                         const rel = vscode.workspace.asRelativePath(editor.document.uri);
+                        this.clearState();
                         this.onRunFix(rel);
                     }
                     else {
@@ -68,11 +69,12 @@ class SidebarProvider {
                     break;
                 }
                 case "runScan": {
+                    this.clearState();
                     this.onRunScan();
                     break;
                 }
                 case "viewDiff": {
-                    this.onViewDiff(data.item, data.index);
+                    this.onViewDiff(data.item, data.index, data.targetFile);
                     break;
                 }
             }
@@ -97,6 +99,9 @@ class SidebarProvider {
     }
     setFindings(findings) {
         this.postMessage({ type: "findings", findings });
+    }
+    clearState() {
+        this.postMessage({ type: "reset" });
     }
     postMessage(message) {
         this.view?.webview.postMessage(message);
@@ -336,6 +341,16 @@ class SidebarProvider {
           }
           break;
 
+        case "reset":
+          currentPlan = null;
+          planSection.style.display = "none";
+          planItems.innerHTML = "";
+          logBox.innerHTML = "";
+          findingsSection.style.display = "none";
+          findingsList.innerHTML = "";
+          updateProgressBar(0, "Starting...", "AGENT");
+          break;
+
         case "plan":
           currentPlan = msg.plan;
           planItems.innerHTML = "";
@@ -357,6 +372,8 @@ class SidebarProvider {
               \`;
               planItems.appendChild(card);
             });
+          } else {
+            planSection.style.display = "none";
           }
           break;
 
@@ -382,7 +399,12 @@ class SidebarProvider {
 
     function viewDiff(idx) {
       if (currentPlan && currentPlan.items[idx]) {
-        vscode.postMessage({ type: "viewDiff", item: currentPlan.items[idx], index: idx });
+        vscode.postMessage({
+          type: "viewDiff",
+          item: currentPlan.items[idx],
+          index: idx,
+          targetFile: currentPlan.target_file
+        });
       }
     }
   </script>

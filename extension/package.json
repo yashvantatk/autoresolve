@@ -2,7 +2,7 @@
   "name": "autoresolve-vscode",
   "displayName": "AutoResolve",
   "description": "AI code review and repair for Python with proven fixes only",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "autoresolve",
   "engines": {
     "vscode": "^1.85.0"
@@ -70,16 +70,27 @@
         "command": "autoresolve.rejectFix",
         "title": "Reject Fix",
         "category": "AutoResolve"
+      },
+      {
+        "command": "autoresolve.setApiKey",
+        "title": "Set Gemini API Key",
+        "category": "AutoResolve"
       }
     ],
     "configuration": {
       "type": "object",
       "title": "AutoResolve Configuration",
       "properties": {
+        "autoresolve.provider": {
+          "type": "string",
+          "enum": ["gemini", "ollama"],
+          "default": "gemini",
+          "description": "LLM provider for AutoResolve"
+        },
         "autoresolve.cliPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the autoresolve-cli binary (defaults to target/debug/autoresolve-cli in workspace)"
+          "description": "Path to the autoresolve-cli binary (defaults to auto-managed binary in global storage)"
         },
         "autoresolve.pythonCommand": {
           "type": "string",

@@ -133,6 +133,8 @@ pub struct PlanItem {
 /// Everything a `fix` run verified, in the order it was stacked.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Plan {
+    #[serde(default)]
+    pub target_file: Option<String>,
     pub items: Vec<PlanItem>,
 }
 
@@ -447,6 +449,92 @@ fn safe_join(base: &Path, file: &str) -> Result<PathBuf> {
     Ok(p)
 }
 
+fn normalize_crlf(s: &str) -> String {
+    s.replace("\r\n", "\n")
+}
+
+fn apply_single_edit(content: &str, file: &str, search: &str, replace: &str) -> Result<String> {
+    if search.is_empty() {
+        bail!("edit for {file}: `search` block must not be empty");
+    }
+
+    // 1. Direct exact match
+    let n = content.matches(search).count();
+    if n == 1 {
+        return Ok(content.replacen(search, replace, 1));
+    }
+    if n > 1 {
+        bail!("edit for {file}: `search` must match exactly once but matched {n} time(s)");
+    }
+
+    // 2. CRLF-normalized exact match
+    let norm_content = normalize_crlf(content);
+    let norm_search = normalize_crlf(search);
+    let norm_replace = normalize_crlf(replace);
+
+    let n_norm = norm_content.matches(&norm_search).count();
+    if n_norm == 1 {
+        return Ok(norm_content.replacen(&norm_search, &norm_replace, 1));
+    }
+    if n_norm > 1 {
+        bail!("edit for {file}: normalized `search` matched {n_norm} times");
+    }
+
+    // 3. Fuzzy / Trimmed line matching fallback (trim_end on each line)
+    let content_lines: Vec<&str> = norm_content.lines().collect();
+    let search_lines: Vec<&str> = norm_search.lines().collect();
+
+    if !search_lines.is_empty() && search_lines.len() <= content_lines.len() {
+        let trimmed_search: Vec<&str> = search_lines.iter().map(|l| l.trim_end()).collect();
+        let mut matches = Vec::new();
+
+        for i in 0..=(content_lines.len() - search_lines.len()) {
+            let mut matches_all = true;
+            for j in 0..search_lines.len() {
+                if content_lines[i + j].trim_end() != trimmed_search[j] {
+                    matches_all = false;
+                    break;
+                }
+            }
+            if matches_all {
+                matches.push(i);
+            }
+        }
+
+        if matches.len() == 1 {
+            let start = matches[0];
+            let end = start + search_lines.len();
+
+            let mut out = Vec::new();
+            for (idx, line) in content_lines.iter().enumerate() {
+                if idx == start {
+                    out.push(norm_replace.as_str());
+                } else if idx > start && idx < end {
+                    // skip replaced lines
+                } else {
+                    out.push(*line);
+                }
+            }
+            let mut res = out.join("\n");
+            if norm_content.ends_with('\n') && !res.ends_with('\n') {
+                res.push('\n');
+            }
+            return Ok(res);
+        } else if matches.len() > 1 {
+            bail!(
+                "edit for {file}: fuzzy line match found {} times; search block must be unique",
+                matches.len()
+            );
+        }
+    }
+
+    // 4. Detailed error message showing search target vs content preview
+    let preview: String = norm_content.lines().take(15).collect::<Vec<_>>().join("\n");
+    bail!(
+        "edit for {file}: `search` could not be matched in file.\n\nExpected Search Block:\n{search}\n\nFile Slice Preview (first 15 lines):\n{preview}"
+    );
+}
+
 /// Apply edits under `base`. All-or-nothing: nothing is written unless every edit matches.
 pub fn apply_edits(base: &Path, edits: &[Edit]) -> Result<Vec<String>> {
     let base = base.canonicalize().context("bad base directory")?;
@@ -458,11 +546,8 @@ pub fn apply_edits(base: &Path, edits: &[Edit]) -> Result<Vec<String>> {
             Some(t) => t.clone(),
             None => std::fs::read_to_string(&path)?,
         };
-        let n = if e.search.is_empty() { 0 } else { current.matches(&e.search).count() };
-        if n != 1 {
-            bail!("edit for {}: `search` must match exactly once but matched {n} time(s)", e.file);
-        }
-        pending.insert(path, current.replacen(&e.search, &e.replace, 1));
+        let updated = apply_single_edit(&current, &e.file, &e.search, &e.replace)?;
+        pending.insert(path, updated);
         if !touched.contains(&e.file) {
             touched.push(e.file.clone());
         }
@@ -966,6 +1051,20 @@ mod tests {
     }
 
     #[test]
+    fn edits_support_crlf_and_trailing_whitespace_fallback() {
+        let d = tmp("edits_fuzzy");
+        // CRLF in file, LF in search
+        std::fs::write(d.join("crlf.py"), "def f():\r\n    return 1\r\n").unwrap();
+        assert!(apply_edits(&d, &[edit("crlf.py", "def f():\n    return 1", "def f():\n    return 2")]).is_ok());
+        assert!(std::fs::read_to_string(d.join("crlf.py")).unwrap().contains("return 2"));
+
+        // Trailing whitespace in file
+        std::fs::write(d.join("trim.py"), "def g():   \n    return 42 \n").unwrap();
+        assert!(apply_edits(&d, &[edit("trim.py", "def g():\n    return 42", "def g():\n    return 99")]).is_ok());
+        assert!(std::fs::read_to_string(d.join("trim.py")).unwrap().contains("return 99"));
+    }
+
+    #[test]
     fn verify_catches_syntax_errors() {
         let d = tmp("verify");
         std::fs::write(d.join("bad.py"), "def f(:\n    pass\n").unwrap();
@@ -1039,6 +1138,7 @@ mod tests {
                     test: Some(("autoresolve_regression/test_b.py".into(), "pass\n".into())),
                 },
             ],
+            ..Default::default()
         };
         apply_plan(&d, &plan, &Policy::default(), true).unwrap();
         assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "x = 3\n");
@@ -1053,6 +1153,7 @@ mod tests {
     fn plan_of(edits: Vec<Edit>, test: Option<(String, String)>) -> Plan {
         Plan {
             items: vec![PlanItem { title: "t".into(), summary: String::new(), proven: false, edits, test }],
+            ..Default::default()
         }
     }
 
@@ -1147,7 +1248,7 @@ mod tests {
             edits: vec![edit("a.py", search, replace)],
             test: None,
         };
-        let plan = Plan { items: vec![item("x = 1", "x = 2", true), item("y = 1", "y = 2", false)] };
+        let plan = Plan { items: vec![item("x = 1", "x = 2", true), item("y = 1", "y = 2", false)], ..Default::default() };
         let pol = Policy::default();
         assert_eq!(apply_plan(&d, &plan, &pol, false).unwrap(), 1); // one skipped
         assert_eq!(std::fs::read_to_string(d.join("a.py")).unwrap(), "x = 2\ny = 1\n");

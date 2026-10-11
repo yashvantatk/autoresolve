@@ -1,5 +1,6 @@
 import * as cp from "child_process";
 import * as readline from "readline";
+import * as vscode from "vscode";
 import { JsonRpcRequest, JsonRpcResponse, Finding } from "./types";
 
 export class McpClient {
@@ -10,23 +11,58 @@ export class McpClient {
   }>();
   private nextId = 1;
   private initialized = false;
+  private customEnv?: NodeJS.ProcessEnv;
 
   constructor(
-    private readonly binaryPath: string,
-    private readonly workspaceRoot: string
+    private binaryPath: string,
+    private readonly workspaceRoot: string,
+    private readonly context?: vscode.ExtensionContext
   ) {}
 
-  public async start(): Promise<void> {
+  public setBinaryPath(p: string): void {
+    if (this.binaryPath !== p) {
+      this.binaryPath = p;
+      if (this.process) {
+        this.stop();
+      }
+    }
+  }
+
+  public setEnv(env: NodeJS.ProcessEnv): void {
+    this.customEnv = env;
+    if (this.process) {
+      this.stop();
+    }
+  }
+
+  public async start(customEnv?: NodeJS.ProcessEnv): Promise<void> {
     if (this.process) {
       return;
     }
 
+    const config = vscode.workspace.getConfiguration("autoresolve");
+    const provider = config.get<string>("provider", "gemini");
+
+    let apiKey = process.env.GEMINI_API_KEY;
+    if (this.context && provider === "gemini") {
+      const storedKey = await this.context.secrets.get("autoresolve.geminiApiKey");
+      if (storedKey) {
+        apiKey = storedKey;
+      }
+    }
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      AUTORESOLVE_PROVIDER: provider,
+      ...(apiKey ? { GEMINI_API_KEY: apiKey } : {}),
+      ...(this.customEnv || {}),
+      ...(customEnv || {}),
+    };
+
     this.process = cp.spawn(this.binaryPath, ["mcp"], {
       cwd: this.workspaceRoot,
       stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-      },
+      env,
     });
 
     if (!this.process.stdout || !this.process.stdin) {

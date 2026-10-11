@@ -9,6 +9,9 @@ pub mod policy;
 pub mod report;
 pub mod lint;
 pub mod events;
+pub mod deterministic;
+pub mod output;
+pub mod pipeline;
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Tree};
 

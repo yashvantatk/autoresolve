@@ -36,27 +36,59 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.McpClient = void 0;
 const cp = __importStar(require("child_process"));
 const readline = __importStar(require("readline"));
+const vscode = __importStar(require("vscode"));
 class McpClient {
     binaryPath;
     workspaceRoot;
+    context;
     process = null;
     pendingRequests = new Map();
     nextId = 1;
     initialized = false;
-    constructor(binaryPath, workspaceRoot) {
+    customEnv;
+    constructor(binaryPath, workspaceRoot, context) {
         this.binaryPath = binaryPath;
         this.workspaceRoot = workspaceRoot;
+        this.context = context;
     }
-    async start() {
+    setBinaryPath(p) {
+        if (this.binaryPath !== p) {
+            this.binaryPath = p;
+            if (this.process) {
+                this.stop();
+            }
+        }
+    }
+    setEnv(env) {
+        this.customEnv = env;
+        if (this.process) {
+            this.stop();
+        }
+    }
+    async start(customEnv) {
         if (this.process) {
             return;
         }
+        const config = vscode.workspace.getConfiguration("autoresolve");
+        const provider = config.get("provider", "gemini");
+        let apiKey = process.env.GEMINI_API_KEY;
+        if (this.context && provider === "gemini") {
+            const storedKey = await this.context.secrets.get("autoresolve.geminiApiKey");
+            if (storedKey) {
+                apiKey = storedKey;
+            }
+        }
+        const env = {
+            ...process.env,
+            AUTORESOLVE_PROVIDER: provider,
+            ...(apiKey ? { GEMINI_API_KEY: apiKey } : {}),
+            ...(this.customEnv || {}),
+            ...(customEnv || {}),
+        };
         this.process = cp.spawn(this.binaryPath, ["mcp"], {
             cwd: this.workspaceRoot,
             stdio: ["pipe", "pipe", "pipe"],
-            env: {
-                ...process.env,
-            },
+            env,
         });
         if (!this.process.stdout || !this.process.stdin) {
             throw new Error("Failed to create stdio streams for autoresolve-cli mcp");

@@ -288,11 +288,12 @@ mod tests {
             test,
         };
         let p = Policy::default();
-        assert!(p.check_plan(&Plan { items: vec![item(vec![edit("a.py", "x", "y")], None)] }).is_ok());
-        let git = Plan { items: vec![item(vec![edit(".git/hooks/post-commit", "x", "y")], None)] };
+        assert!(p.check_plan(&Plan { items: vec![item(vec![edit("a.py", "x", "y")], None)], ..Default::default() }).is_ok());
+        let git = Plan { items: vec![item(vec![edit(".git/hooks/post-commit", "x", "y")], None)], ..Default::default() };
         assert!(p.check_plan(&git).is_err());
         let evil_test = Plan {
             items: vec![item(vec![edit("a.py", "x", "y")], Some(("../../.bashrc".into(), "x".into())))],
+            ..Default::default()
         };
         assert!(p.check_plan(&evil_test).is_err());
     }

@@ -22,6 +22,7 @@ export interface PlanItem {
 }
 
 export interface Plan {
+  target_file?: string;
   items: PlanItem[];
 }
 

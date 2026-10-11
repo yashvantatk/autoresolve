@@ -8,7 +8,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri,
     private readonly onRunFix: (file: string) => void,
     private readonly onRunScan: () => void,
-    private readonly onViewDiff: (item: PlanItem, idx: number) => void
+    private readonly onViewDiff: (item: PlanItem, idx: number, targetFile?: string) => void
   ) {}
 
   public resolveWebviewView(
@@ -30,6 +30,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           const editor = vscode.window.activeTextEditor;
           if (editor && editor.document.languageId === "python") {
             const rel = vscode.workspace.asRelativePath(editor.document.uri);
+            this.clearState();
             this.onRunFix(rel);
           } else {
             vscode.window.showWarningMessage("Please open a Python file first.");
@@ -37,11 +38,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "runScan": {
+          this.clearState();
           this.onRunScan();
           break;
         }
         case "viewDiff": {
-          this.onViewDiff(data.item, data.index);
+          this.onViewDiff(data.item, data.index, data.targetFile);
           break;
         }
       }
@@ -72,6 +74,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   public setFindings(findings: Finding[]): void {
     this.postMessage({ type: "findings", findings });
+  }
+
+  public clearState(): void {
+    this.postMessage({ type: "reset" });
   }
 
   private postMessage(message: any): void {
@@ -313,6 +319,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           }
           break;
 
+        case "reset":
+          currentPlan = null;
+          planSection.style.display = "none";
+          planItems.innerHTML = "";
+          logBox.innerHTML = "";
+          findingsSection.style.display = "none";
+          findingsList.innerHTML = "";
+          updateProgressBar(0, "Starting...", "AGENT");
+          break;
+
         case "plan":
           currentPlan = msg.plan;
           planItems.innerHTML = "";
@@ -334,6 +350,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               \`;
               planItems.appendChild(card);
             });
+          } else {
+            planSection.style.display = "none";
           }
           break;
 
@@ -359,7 +377,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     function viewDiff(idx) {
       if (currentPlan && currentPlan.items[idx]) {
-        vscode.postMessage({ type: "viewDiff", item: currentPlan.items[idx], index: idx });
+        vscode.postMessage({
+          type: "viewDiff",
+          item: currentPlan.items[idx],
+          index: idx,
+          targetFile: currentPlan.target_file
+        });
       }
     }
   </script>

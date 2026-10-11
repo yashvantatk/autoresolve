@@ -6,30 +6,33 @@
 
 AutoResolve reviews Python code with specialized LLM agents, writes targeted patches, and executes them in an isolated Docker sandbox. Fixes are **only applied if a deterministic regression test fails before the patch and passes after it**, ordinary behavior remains guarded, and static checks pass without regressions.
 
+For zero-config local environments, AutoResolve features an **instant hybrid execution engine** that automatically falls back to deterministic AST rewriting and linting when no AI credentials are provided.
+
 ---
 
 ## Highlights
 
-- **Proven Fixes Only**: Fixes are never trusted on prose promises. A patch is accepted only when a generated regression test fails on the original code and passes on the patched code.
+- **Hybrid Execution Engine**: Seamlessly routes between a high-speed, zero-config deterministic AST patcher (no API key, no Docker, no LLM required) and an adversarial multi-agent AI verification committee.
+- **Proven Fixes Only**: Fixes in AI mode are never trusted on prose promises. A patch is accepted only when an independently generated regression test fails on the original code and passes on the patched code.
 - **Contract-Aware Enforcement**: Deterministically extracts docstrings and function signatures to ensure patches adhere to documented specifications (0 false trust on benchmark).
-- **Hard Sandbox Isolation**: Non-AI checks and regression tests execute in a network-disabled Docker container (read-only root, 512 MB RAM, 1 CPU, all Linux capabilities dropped).
-- **Four Interfaces**:
-  - **VS Code Extension**: Native visual interface with one-click sidebar runner, real-time agent progress bar, and native red/green diff review with one-click Accept/Reject.
+- **Hard Sandbox Isolation**: AI-generated checks and tests execute in a network-disabled Docker container (read-only root, 512 MB RAM, 1 CPU, all Linux capabilities dropped).
+- **Four Synchronized Interfaces**:
+  - **VS Code Extension (v0.2.0)**: Zero-config visual interface with automated background binary management, OS-level `SecretStorage` keychain integration, live agent feed, and native red/green diff review (`vscode.diff`) with one-click Accept/Reject.
   - **Terminal UI (`tui`)**: Interactive Ratatui interface to monitor live pipeline execution and replay past event logs.
-  - **Model Context Protocol (MCP)**: JSON-RPC 2.0 stdio server exposing symbol graphs, call hierarchies, AST rules, and agent reviews.
+  - **Model Context Protocol (MCP)**: JSON-RPC 2.0 stdio server exposing symbol graphs, call hierarchies, AST rules, and agent reviews to AI IDEs.
   - **GitHub Action**: CI workflow that runs static tree-sitter anti-pattern scans and uploads SARIF reports with zero model quota.
-- **Deterministic Controller**: Rust code controls state transitions and agent turns; language models never approve their own work or decide pipeline progression.
+- **Deterministic Controller**: Rust code controls all state transitions and agent turns; language models never approve their own work or decide pipeline progression.
 - **Empirically Evaluated**: Validated against a 22-case benchmark with hidden oracles (100% detection on single-bug suite, 85% multi-bug recall, 0 false alarms on clean controls, 0 false trust).
 
 ---
 
 ## Contents
 
-1. [Architecture & Pipeline](#1-architecture--pipeline)
+1. [Architecture & Hybrid Routing](#1-architecture--hybrid-routing)
 2. [The Seven Specialized Roles](#2-the-seven-specialized-roles)
 3. [The Trust Model: "Proven" vs "Correct"](#3-the-trust-model-proven-vs-correct)
 4. [Interfaces](#4-interfaces)
-   - [VS Code Extension](#vs-code-extension)
+   - [VS Code Extension (v0.2.0)](#vs-code-extension-v020)
    - [CLI Reference](#cli-reference)
    - [Terminal UI (`tui`)](#terminal-ui-tui)
    - [MCP Server (`mcp`)](#mcp-server-mcp)
@@ -42,10 +45,34 @@ AutoResolve reviews Python code with specialized LLM agents, writes targeted pat
 
 ---
 
-## 1. Architecture & Pipeline
+## 1. Architecture & Hybrid Routing
 
-AutoResolve avoids autonomous swarms in favor of a **deterministic state machine** written in Rust.
+AutoResolve executes via a deterministic controller that selects the optimal pipeline:
 
+```
++-----------------------------------------------------------------------------------+
+|                              AutoResolve Hybrid Router                             |
++-----------------------------------------------------------------------------------+
+       |                                                               |
+ [No API Key / --deterministic]                           [Valid API Key / Ollama]
+       v                                                               v
++----------------------------+                           +--------------------------+
+|     DETERMINISTIC ENGINE   |                           |    AI COMMITTEE PIPELINE |
+|  - Instant Tree-sitter AST |                           |  - Reviewer & Skeptic    |
+|  - Subprocess shell fixes  |                           |  - Tester (Fail on bug)  |
+|  - 'None' comparison fixes |                           |  - Guard (Pass on clean) |
+|  - Broad except rewrites   |                           |  - Fixer exact-once patch|
+|  - Ruff automated linter   |                           |  - Docker Sandboxing     |
+|  - Zero API calls or Docker|                           |  - Contract Patch Gate   |
++----------------------------+                           +--------------------------+
+       |                                                               |
+       +──────────────────────────────┬────────────────────────────────+
+                                      v
+                             Unified plan.json
+                        (Native Red/Green Diffs)
+```
+
+### The AI Committee Pipeline
 ```
                   Source Code & AST Scan (Tree-sitter)
                                    │
@@ -104,7 +131,7 @@ To prevent models from rubber-stamping their own hallucinations, responsibility 
 | **Still-Present** | Main | `submit_verdict` | Runs before subsequent stacked fixes to verify defect was not already cured |
 | **Tester** | Worker | `submit_test` | Must FAIL on buggy code with expected failure; prohibited from inspecting implementation (`inspect`, `__defaults__`, reading source) |
 | **Guard Writer**| Worker | `submit_guard` | Must PASS on original code; verifies normal production call paths |
-| **Fixer** | Worker | `submit_patch` | Exact-once search/replace blocks; validated against `policy.toml` file/line limits |
+| **Fixer** | Worker | `submit_patch` | Exact-once search/replace blocks; normalized CRLF/LF & whitespace trimming |
 | **Patch Gate** | Main | `submit_verdict` | Answers 4 booleans (`still_has_defect`, `unrelated_changes`, `changes_normal_behavior`, `contradicts_documented_contract`). **Rust code computes accept/reject.** |
 
 - **Main Tier** (`AUTORESOLVE_MODEL`): Used for roles whose mistakes are silent (Reviewer, Skeptic, Gate). Default: `gemini-3.1-flash-lite`.
@@ -131,22 +158,25 @@ AutoResolve eliminates this gap through deterministic contract awareness:
 
 AutoResolve provides four synchronized interfaces over the same core engine.
 
-### VS Code Extension
+### VS Code Extension (v0.2.0)
 
-Located in [`extension/`](extension/), this TypeScript extension brings the full agentic repair engine into the editor:
+Located in [`extension/`](extension/), this TypeScript extension brings the full repair engine directly into the editor with **zero manual configuration**:
 
-- **Sidebar Control**: Click the shield icon in the Activity Bar to inspect active files and trigger one-click analysis.
-- **Live Progress & Agent Telemetry**: Watches `.autoresolve/events.jsonl` in real time, advancing through Reviewer, Skeptic, Tester, Guard, Fixer, and Gate stages to 100% completion.
-- **Native Red/Green Diff Review**: Renders proven patches from `.autoresolve/plan.json` in VS Code's native diff editor (`vscode.diff`) via a virtual document provider (`autoresolve-preview://`).
-- **One-Click Patch Application**: Review diffs side-by-side and click **Accept Fix** to apply search-and-replace edits, or **Reject Fix** to discard.
-- **Fast AST Scanner**: Run instant anti-pattern checks directly through the MCP client without spending API quota.
+- **Automated Binary Management**: On activation, automatically detects the host OS and architecture, downloads the matching pre-compiled native Rust backend binary in the background, and makes it executable.
+- **Secure SecretStorage Integration**: No terminal exports or plaintext configs. API keys are encrypted directly in the OS keychain via VS Code's `SecretStorage` API.
+- **Three Execution Modes**:
+  1. **Deterministic Mode (Zero-Config)**: Instant AST and lint patching out-of-the-box when no API key is set. Bypasses Docker checks completely.
+  2. **Cloud AI Mode**: Full multi-agent committee using Google Gemini and Docker.
+  3. **Local AI Mode**: Fully private offline execution via local Ollama instances and Docker.
+- **Live Agent Feed**: Streams `.autoresolve/events.jsonl` in real time, advancing through Reviewer, Skeptic, Tester, Guard, Fixer, and Gate stages.
+- **Native Red/Green Diff Review**: Renders proven patches in VS Code's native diff editor (`vscode.diff`) with CRLF/LF normalization and fuzzy line matching.
+- **One-Click Apply**: Click **Accept Fix** to apply changes cleanly to your file, or **Reject Fix** to discard.
 
-```bash
-cd extension
-npm install
-npm run compile
-# Press F5 in VS Code / Antigravity IDE to launch Extension Development Host
-```
+#### 🔑 Managing Your API Key in VS Code:
+- **Set Key:** Press `Ctrl` + `Shift` + `P` (or `Cmd` + `Shift` + `P`), run **`AutoResolve: Set Gemini API Key`**, and paste your Gemini key.
+- **Clear Key (Revert to Deterministic):** Run **`AutoResolve: Set Gemini API Key`**, press `Enter` with a blank input box, and the extension clears the key and immediately switches to Deterministic Mode.
+
+---
 
 ### CLI Reference
 
@@ -159,11 +189,14 @@ The command-line binary `autoresolve-cli` provides direct pipeline access:
 | `symbols` / `callers <name>` / `callees <name>` | Query symbol index and call relationships | No |
 | `review <file> [--reviewers 3] [--votes N]` | Multi-agent review with specialist reviewers and skeptics | Yes |
 | `fix <file> [--apply] [--test-cmd CMD]` | Full review + verify + fix pipeline; builds `.autoresolve/plan.json` | Yes |
+| `fix <file> --deterministic` (or `-d`) | **Instant AST + Ruff patching engine; zero LLM calls or containers** | **No** |
 | `fix <file> --issue "description"` | Issue-driven mode: skip reviewer/skeptic and fix user-specified bug | Yes |
 | `apply-plan [--include-unproven]` | Re-verify policy and apply saved plan edits to repository | No |
 | `events [--list] [--run ID]` | Print per-role telemetry, timing, and token usage breakdown | No |
 | `tui` | Launch full-screen terminal UI monitor | No |
 | `mcp` | Start Model Context Protocol server over stdio | Only `review` tool |
+
+---
 
 ### Terminal UI (`tui`)
 
@@ -174,6 +207,8 @@ Built with Ratatui, `autoresolve-cli tui` reads `.autoresolve/events.jsonl` with
 - **Role Breakdown**: Press `Tab` to toggle between event timelines and per-role call/cost metrics.
 - **Forking (`x`)**: Export any confirmed issue into an executable `autoresolve fix --issue` command.
 
+---
+
 ### MCP Server (`mcp`)
 
 Implements Model Context Protocol (protocol version `2025-06-18`) over stdio JSON-RPC 2.0. Exposes read-only inspection tools to AI assistants (Claude Desktop, Cursor, Antigravity):
@@ -182,6 +217,8 @@ Implements Model Context Protocol (protocol version `2025-06-18`) over stdio JSO
 - `callers` / `callees`: Name-based call hierarchy queries.
 - `events_summary`: Timing and call statistics of latest run.
 - `review`: Full multi-agent review.
+
+---
 
 ### GitHub Action & SARIF
 
@@ -194,37 +231,44 @@ Runs AST scans on every pull request and push to `main`, emitting SARIF 2.1.0 re
 
 ## 5. Quick Start
 
-### Prerequisites
+### Option A: VS Code Extension (Recommended)
+1. Install the packaged extension (`autoresolve-vscode-0.2.0.vsix`) in VS Code via **Extensions $\to$ ... $\to$ Install from VSIX...**.
+2. Open any Python file.
+3. Click **▶ Run AutoResolve** in the sidebar. Out of the box, it runs in **Deterministic Mode** with zero setup.
+4. (Optional) Press `Ctrl+Shift+P` $\to$ **`AutoResolve: Set Gemini API Key`** to activate Cloud AI mode with Docker verification.
+
+---
+
+### Option B: CLI from Source
+
+#### 1. Prerequisites
 - **Rust 1.90+** (edition 2024 via `rustup`)
-- **Docker** (recommended for sandboxing; fallback to `AUTORESOLVE_SANDBOX=local`)
-- **Node.js 20+** (for VS Code extension)
-- **API Key**: Gemini API key (free tier works) or local Ollama instance
+- **Docker** (recommended for AI sandboxing; optional for `--deterministic` mode)
+- **Python 3.12+** with `pytest`, `ruff`, `bandit`, and `mypy`
 
-### 1. Build & Test
+#### 2. Build & Test
 ```bash
-git clone https://github.com/your-username/autoresolve.git && cd autoresolve
+git clone https://github.com/yashvantatk/autoresolve.git && cd autoresolve
 cargo build --release
-cargo test              # 66 tests passing (62 core, 4 cli)
+cargo test              # 70 unit tests passing (66 core, 4 cli)
 ```
 
-### 2. Build Sandbox Image
+#### 3. Run Deterministic Fix (Zero-Config, No Docker/LLM)
 ```bash
+./target/release/autoresolve-cli fix bench/cases/bare_except/parsing.py --deterministic
+```
+
+#### 4. Run AI Committee Fix (Full Sandbox Verification)
+```bash
+# Build sandbox image
 docker build -t autoresolve-sandbox -f docker/sandbox.Dockerfile docker/
-```
 
-### 3. Environment Setup
-```bash
+# Configure credentials
 export AUTORESOLVE_PROVIDER=gemini
-export AUTORESOLVE_MODEL=gemini-3.1-flash-lite
-export AUTORESOLVE_PROVIDER_STRONG=gemini
-export AUTORESOLVE_MODEL_STRONG=gemini-3.5-flash-lite
-export AUTORESOLVE_RPM=12
-export AUTORESOLVE_DOCKER_IMAGE=autoresolve-sandbox
 export GEMINI_API_KEY="your-api-key"
-```
+export AUTORESOLVE_DOCKER_IMAGE=autoresolve-sandbox
 
-### 4. Run First Fix
-```bash
+# Execute multi-agent verification
 ./target/release/autoresolve-cli fix bench/cases/bare_except/parsing.py
 ```
 
@@ -283,26 +327,32 @@ autoresolve/
 ├── crates/
 │   ├── core/                  # Core library (autoresolve-core)
 │   │   ├── src/agent.rs       # Agent loop, tool dispatch, loop guards
+│   │   ├── src/deterministic.rs# Non-LLM deterministic AST & Ruff rewriting engine
 │   │   ├── src/detectors.rs   # Tree-sitter AST anti-pattern rules
-│   │   ├── src/graph.rs       # SQLite symbol index and call graph
-│   │   ├── src/llm.rs         # Provider traits, Gemini/Ollama clients, RPM pacing
-│   │   ├── src/review.rs      # Reviewer, specialist ensembles, skeptics
+│   │   ├── src/events.rs      # JSONL event logger & per-role telemetry
 │   │   ├── src/fix.rs         # Tester, guard writer, fixer, contract extraction, gate
-│   │   ├── src/sandbox.rs     # Docker isolation runner
-│   │   ├── src/policy.rs      # Policy engine, path guards, symlink defenses
+│   │   ├── src/graph.rs       # SQLite symbol index and call graph
 │   │   ├── src/lint.rs        # Ruff, Bandit, and Mypy sandbox verifiers
+│   │   ├── src/llm.rs         # Provider traits, Gemini/Ollama clients, RPM pacing
+│   │   ├── src/output.rs      # Standardized CLI / UI JSON output formatters
+│   │   ├── src/pipeline.rs    # Orchestrates hybrid deterministic vs AI execution
+│   │   ├── src/policy.rs      # Policy engine, path guards, symlink defenses
 │   │   ├── src/report.rs      # Markdown and SARIF 2.1.0 formatters
-│   │   └── src/events.rs      # JSONL event logger & per-role telemetry
+│   │   ├── src/review.rs      # Reviewer, specialist ensembles, skeptics
+│   │   └── src/sandbox.rs     # Docker isolation runner
 │   └── cli/                   # CLI binary (autoresolve-cli)
-│       ├── src/main.rs        # CLI subcommands and pipeline orchestrator
-│       ├── src/tui.rs         # Ratatui terminal UI
-│       └── src/mcp.rs         # MCP stdio JSON-RPC server
-├── extension/                 # VS Code Extension (TypeScript)
-│   ├── src/extension.ts       # Extension activator and commands
-│   ├── src/pipelineRunner.ts  # CLI pipeline spawner and events.jsonl tailer
-│   ├── src/sidebarProvider.ts # Sidebar Webview UI and progress bar
-│   ├── src/diffViewer.ts      # Native VS Code diff viewer & edit applicator
-│   └── src/mcpClient.ts       # TypeScript stdio MCP client
+│       ├── src/main.rs        # CLI subcommands and clap argument definitions
+│       ├── src/mcp.rs         # MCP stdio JSON-RPC server
+│       └── src/tui.rs         # Ratatui terminal UI
+├── extension/                 # VS Code Extension (TypeScript, v0.2.0)
+│   ├── src/binaryManager.ts   # Automated native binary download & Docker verification
+│   ├── src/diffViewer.ts      # Native VS Code diff viewer & tolerant patch applicator
+│   ├── src/extension.ts       # Extension activator, SecretStorage commands, lifecycle
+│   ├── src/mcpClient.ts       # TypeScript stdio MCP client
+│   ├── src/pipelineRunner.ts  # Hybrid routing engine & events.jsonl streaming
+│   ├── src/sidebarProvider.ts # Sidebar Webview UI, status badges, & live agent feed
+│   ├── package.json           # Extension manifests, commands, and configuration
+│   └── autoresolve-vscode-0.2.0.vsix # Pre-packaged ready-to-install bundle
 ├── docker/
 │   └── sandbox.Dockerfile     # Minimal Python 3.12 sandbox container
 ├── bench/                     # 22-case benchmark suite
@@ -323,3 +373,4 @@ autoresolve/
 3. **Never allow models to inspect implementation in tests.** Reject generated tests that read `__defaults__`, `inspect`, or source files; they test the current code rather than intended behavior.
 4. **Behavior guards are as critical as regression tests.** An AI fix can cure a bug while breaking every valid call path (e.g., shell injection fixes that break normal arguments). Requiring a pre-fix guard test prevents regressions.
 5. **Separate main models from worker models.** Roles whose failures are silent (Skeptic, Gate) require the strongest available reasoning tier. Roles whose outputs are caught by compilers and test runners (Tester, Fixer) can utilize fast, inexpensive models.
+6. **Graceful degradation beats hard failures.** When credentials or container runtimes are unavailable, falling back to a deterministic AST rewriting engine provides instant utility without blocking developers.
